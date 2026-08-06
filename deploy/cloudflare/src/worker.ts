@@ -15,6 +15,8 @@ import {
   type WireErrorCode,
   type WireRequest,
 } from "@pinery/workspace-cf-computer/protocol";
+import { execDeadline, withDeadline } from "./exec-deadline.js";
+import { InvalidPatternError, matchGlob, regexGrep, type GrepFilesystem } from "./search.js";
 
 /**
  * Pinery Cloudflare Worker(S2 实验路径)。
@@ -208,20 +210,40 @@ async function handleRpc(handle: WorkspaceHandle, workspaceId: string, req: Wire
     }
 
     case "grep": {
-      // Computer 的 VFS grep 在服务端完成匹配,只回传命中行(不搬运仓库)
-      const matches = await ws.fs.grep(req.pattern, guardPath(req.path), { ignoreCase: req.ignoreCase });
+      // Matching happens server-side; only hit lines travel back (no repo transfer).
+      //
+      // Computer's VFS grep is substring-only (`text.includes(needle)`), so it
+      // implements the tool's `literal: true` mode exactly and cannot implement
+      // the regex mode the tool offers by default. Regex is therefore evaluated
+      // here, over the same VFS.
+      const path = guardPath(req.path);
+      const limit = req.limit ?? 100;
+      const matches = req.literal
+        ? await ws.fs.grep(req.pattern, path, { ignoreCase: req.ignoreCase })
+        : await regexGrep(ws.fs as unknown as GrepFilesystem, path, req);
       const globbed = req.glob ? matches.filter((m) => matchGlob(m.path, req.glob as string)) : matches;
-      return { matches: globbed.slice(0, req.limit ?? 100) };
+      return { matches: globbed.slice(0, limit) };
     }
 
     case "exec": {
       const cwd = guardPath(req.cwd ?? WORKSPACE_ROOT);
+      // timeoutMs must reach the runtime: without it a non-terminating command
+      // (`tail -f`) keeps running after the client gives up on the HTTP request,
+      // holding resources and able to keep mutating a task workspace.
+      const timeoutMs = execDeadline(req.timeoutMs);
       using run = await ws.runtime.exec(req.command, {
         encoding: "utf8",
         cwd,
+        timeoutMs,
         ...(req.backend ? { backend: req.backend } : {}),
       });
-      const result = await run.result();
+      // Second layer: a backend that ignores timeoutMs must not turn into an
+      // unbounded await here. On expiry the run is killed explicitly.
+      const result = await withDeadline(
+        run,
+        timeoutMs,
+        (ms) => new WireError("exec_failed", `命令执行超过 ${Math.round(ms / 1000)}s 已终止`),
+      );
       return {
         stdout: result.stdout ?? "",
         stderr: result.stderr ?? "",
@@ -234,6 +256,11 @@ async function handleRpc(handle: WorkspaceHandle, workspaceId: string, req: Wire
       if (!/^https:\/\//i.test(req.url)) {
         throw new WireError("bad_request", `CF 路径只支持 HTTPS 仓库地址(收到:${req.url})`);
       }
+      // 幂等:多个 adapter 副本可能同时请求初始化同一工作区。DO 天然串行,
+      // 所以「检查 marker + clone」在这里是原子的;已是同一仓库就直接返回,
+      // 避免第二次 clone 在第一次的调查读取过程中改写 WORKSPACE_ROOT。
+      const existing = await readMarker(ws);
+      if (existing?.url === req.url) return {};
       await ws.git.clone({
         url: req.url,
         dir: WORKSPACE_ROOT,
@@ -271,15 +298,6 @@ async function handleRpc(handle: WorkspaceHandle, workspaceId: string, req: Wire
   }
 }
 
-/** 极简 glob:支持 *.ext 与 **&#47;*.ext(grep 的文件过滤) */
-export function matchGlob(path: string, glob: string): boolean {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, " ")
-    .replace(/\*/g, "[^/]*")
-    .replace(/ /g, ".*");
-  return new RegExp(`(^|/)${escaped}$`).test(path);
-}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { specFor, L0_ALLOWED_COMMANDS } from "./command-specs.js";
 import type { PermissionLevel } from "./levels.js";
 
 /**
@@ -34,6 +35,19 @@ export interface BashPolicyOptions {
    * 不提供则跳过该项检查(策略引擎可独立于工作区使用)。
    */
   workspaceDir?: string;
+  /**
+   * Resolve an absolute path to its real location, following symlinks. Injected
+   * by the caller (runner-pi uses node:fs) so this module stays fs-free and
+   * testable as pure functions.
+   *
+   * A lexical fence cannot stop symlinks: git preserves them verbatim, so the
+   * argument in `cat leak` looks like an in-workspace relative path while the
+   * kernel follows it to /data/pinery.db. When omitted, only the lexical check
+   * runs — remote workspaces have no host filesystem underneath, so the escape
+   * does not exist there. The implementation must be total: return the
+   * normalized path for entries that do not exist rather than throwing.
+   */
+  realpath?: (absolutePath: string) => string;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +61,14 @@ export interface SplitResult {
   hasSubstitution: boolean;
   /** 是否包含输出重定向(> >> 2>file),不含 /dev/null 与 2>&1 */
   hasOutputRedirect: boolean;
+  /** 是否包含输入重定向(< file):bash 会替我们打开该文件,绕过参数级围栏 */
+  hasInputRedirect: boolean;
+  /**
+   * Whether the command contains a parameter expansion ($VAR / ${VAR}) that the
+   * shell will expand. Text protected by single quotes or a backslash does not
+   * count, so literal `$` in a search pattern stays usable.
+   */
+  hasExpansion: boolean;
 }
 
 /**
@@ -58,6 +80,8 @@ export function splitCommand(input: string): SplitResult {
   const segments: string[] = [];
   let hasSubstitution = false;
   let hasOutputRedirect = false;
+  let hasInputRedirect = false;
+  let hasExpansion = false;
 
   // (raw, depth) 待处理队列;depth 防御病态嵌套
   const queue: Array<{ text: string; depth: number }> = [{ text: input, depth: 0 }];
@@ -141,6 +165,14 @@ export function splitCommand(input: string): SplitResult {
         continue;
       }
 
+      // Parameter expansion $VAR / ${VAR}. Checked above the inDouble fast path
+      // because expansion happens inside double quotes too; single-quoted text
+      // was consumed by the inSingle branch and `\$` by the escape branch, so
+      // only a genuinely expanding `$` reaches here. `$(` was handled above.
+      if (ch === "$" && next !== undefined && /[A-Za-z_{@*?#!0-9]/.test(next)) {
+        hasExpansion = true;
+      }
+
       if (inDouble) {
         current += ch;
         i++;
@@ -163,6 +195,15 @@ export function splitCommand(input: string): SplitResult {
         queue.push({ text: inner, depth: depth + 1 });
         current += " __SUBST__ ";
         i = j;
+        continue;
+      }
+
+      // 输入重定向:bash 自己打开文件喂给 stdin,参数级围栏完全看不到路径
+      // (`head -c100</data/pinery.db` 的 token 仍是个「无害」的选项)
+      if (ch === "<") {
+        hasInputRedirect = true;
+        current += ch;
+        i++;
         continue;
       }
 
@@ -202,7 +243,7 @@ export function splitCommand(input: string): SplitResult {
     pushSegment();
   }
 
-  return { segments, hasSubstitution, hasOutputRedirect };
+  return { segments, hasSubstitution, hasOutputRedirect, hasInputRedirect, hasExpansion };
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +422,11 @@ const NO_PATH_ARG_COMMANDS = new Set(["echo", "printf", "seq", "expr", "date", "
  * 只检查「看起来是路径」的参数:绝对路径、~ 开头、含 .. 穿越的相对路径。
  * 普通相对路径(src/a.ts)由 cwd 保证落在工作区内。
  */
-export function argEscapesWorkspace(arg: string, workspaceDir: string): boolean {
+export function argEscapesWorkspace(
+  arg: string,
+  workspaceDir: string,
+  realpath?: (absolutePath: string) => string,
+): boolean {
   if (!arg) return false;
   // 选项:值可能以三种形态携带路径,都要检查
   //   --opt=<path>   分隔符 =
@@ -389,25 +434,134 @@ export function argEscapesWorkspace(arg: string, workspaceDir: string): boolean 
   //   --opt <path>   分离形态由调用方按下一个 token 处理
   if (arg.startsWith("-")) {
     const eq = arg.indexOf("=");
-    if (eq >= 0) return argEscapesWorkspace(arg.slice(eq + 1), workspaceDir);
+    if (eq >= 0) return argEscapesWorkspace(arg.slice(eq + 1), workspaceDir, realpath);
     const attached = arg.match(/^-{1,2}[A-Za-z]*([/~].*)$/);
-    return attached ? argEscapesWorkspace(attached[1] as string, workspaceDir) : false;
+    return attached ? argEscapesWorkspace(attached[1] as string, workspaceDir, realpath) : false;
   }
   // ~ 会被 shell 展开到 HOME,一律拒绝
   if (arg === "~" || arg.startsWith("~/")) return true;
 
+  const root = resolve(workspaceDir);
   const looksAbsolute = arg.startsWith("/");
   const hasTraversal = arg === ".." || arg.startsWith("../") || arg.includes("/../") || arg.endsWith("/..");
-  if (!looksAbsolute && !hasTraversal) return false;
-
-  const root = resolve(workspaceDir);
   const target = looksAbsolute ? resolve(arg) : resolve(root, arg);
-  if (target === root) return false;
-  return !target.startsWith(`${root}/`);
+
+  if (looksAbsolute || hasTraversal) {
+    if (target !== root && !target.startsWith(`${root}/`)) return true;
+  }
+
+  // Symlink fence. A plain relative path passes every lexical check above and
+  // still escapes when it names a symlink git checked out (`leak -> ../../pinery.db`).
+  // Safe to run on non-path tokens too: a pattern that names nothing resolves to
+  // itself under the workspace and stays inside.
+  if (!realpath) return false;
+  const realRoot = realpath(root);
+  const realTarget = realpath(target);
+  return realTarget !== realRoot && !realTarget.startsWith(`${realRoot}/`);
 }
 
 /** 逐参数校验路径围栏;越界返回该参数 */
-function findEscapingArg(cmd: string, args: string[], workspaceDir: string): string | undefined {
+/**
+ * 按命令规格逐参数校验(白名单语义,见 command-specs.ts)。
+ *
+ * 未声明的标志一律拒绝:这样 `rg --files`(改变位置参数语义)、`rg --pre`
+ * (执行外部程序)、`sort -o` / `iconv -o`(写文件)、`xargs -a`(读工作区外)
+ * 这类选项不需要事先被识别为危险,天然落在白名单之外。
+ * 同时消除了「凡是带 / 的标志值都当路径」造成的误伤(`cut -d/`、`sort -t/`)。
+ */
+function checkArgsAgainstSpec(
+  cmd: string,
+  args: string[],
+  options: BashPolicyOptions,
+): BashPolicyResult | undefined {
+  const spec = specFor(cmd);
+  if (!spec) return undefined; // 无规格的命令由调用方另行处理(git)
+
+  const flags = new Set(spec.flags ?? []);
+  const valueFlags = new Set(spec.valueFlags ?? []);
+  const pathFlags = new Set(spec.pathFlags ?? []);
+  const denyFlag = (arg: string): BashPolicyResult => ({
+    decision: "deny",
+    rule: "l0-unknown-option",
+    reason: `L0 不认识 ${cmd} 的选项 ${arg};只允许已审核过的只读选项`,
+  });
+  const denyPath = (arg: string): BashPolicyResult => ({
+    decision: "deny",
+    rule: "path-escape",
+    reason: `L0 只能访问仓库工作区内的路径(越界参数:${arg})`,
+  });
+  const outsideWorkspace = (value: string): boolean =>
+    !!options.workspaceDir && argEscapesWorkspace(value, options.workspaceDir, options.realpath);
+
+  let positionalSeen = 0;
+  let onlyPositional = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+
+    if (onlyPositional || !arg.startsWith("-") || arg === "-") {
+      positionalSeen++;
+      const isPattern = spec.positional === "pattern-then-paths" && positionalSeen === 1;
+      if (spec.positional === "opaque" || isPattern) continue;
+      if (outsideWorkspace(arg)) return denyPath(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      onlyPositional = true;
+      continue;
+    }
+
+    // --opt=value
+    const eq = arg.indexOf("=");
+    if (arg.startsWith("--") && eq > 0) {
+      const name = arg.slice(0, eq);
+      const value = arg.slice(eq + 1);
+      if (pathFlags.has(name)) {
+        if (outsideWorkspace(value)) return denyPath(arg);
+        continue;
+      }
+      if (valueFlags.has(name) || flags.has(name)) continue;
+      return denyFlag(arg);
+    }
+
+    // 精确匹配(长短选项同路径),值在下一个 token
+    if (flags.has(arg)) continue;
+    if (valueFlags.has(arg)) {
+      i++; // 消耗值,不当路径
+      continue;
+    }
+    if (pathFlags.has(arg)) {
+      const value = args[++i];
+      if (value !== undefined && outsideWorkspace(value)) return denyPath(value);
+      continue;
+    }
+
+    // -<数字>(head -50)
+    if (spec.numeric && /^-\d+$/.test(arg)) continue;
+
+    // 紧贴值:-n20 / -d, / -f/etc/passwd
+    const short = arg.match(/^(-[A-Za-z])(.+)$/);
+    if (short) {
+      const name = short[1] as string;
+      const value = short[2] as string;
+      if (pathFlags.has(name)) {
+        if (outsideWorkspace(value)) return denyPath(arg);
+        continue;
+      }
+      if (valueFlags.has(name)) continue;
+      // 组合短标志 -la:每一位都要在 flags 中
+      if (/^-[A-Za-z]+$/.test(arg) && [...arg.slice(1)].every((c) => flags.has(`-${c}`))) continue;
+    }
+
+    return denyFlag(arg);
+  }
+
+  return { decision: "allow" };
+}
+
+function findEscapingArg(cmd: string, args: string[], options: BashPolicyOptions): string | undefined {
+  const workspaceDir = options.workspaceDir as string;
   if (NO_PATH_ARG_COMMANDS.has(cmd)) return undefined;
   const skipFirstPositional = PATTERN_FIRST_COMMANDS.has(cmd);
   let seenPositional = false;
@@ -418,7 +572,7 @@ function findEscapingArg(cmd: string, args: string[], workspaceDir: string): str
       continue; // pattern,不是路径
     }
     if (isPositional) seenPositional = true;
-    if (argEscapesWorkspace(arg, workspaceDir)) return arg;
+    if (argEscapesWorkspace(arg, workspaceDir, options.realpath)) return arg;
   }
   return undefined;
 }
@@ -481,7 +635,9 @@ function gitVerdict(args: string[], level: PermissionLevel, options: BashPolicyO
       };
     }
     if (options.workspaceDir) {
-      const escaping = args.find((a) => argEscapesWorkspace(a, options.workspaceDir as string));
+      const escaping = args.find((a) =>
+        argEscapesWorkspace(a, options.workspaceDir as string, options.realpath),
+      );
       if (escaping) {
         return {
           decision: "deny",
@@ -518,6 +674,17 @@ function segmentVerdict(segment: string, level: PermissionLevel, options: BashPo
 
   if (HARD_DENY.has(cmd)) {
     return { decision: "deny", rule: `hard-deny:${cmd}`, reason: `禁止执行 ${cmd}(提权/系统级操作)` };
+  }
+
+  // 包装命令(xargs/env/timeout…):L0 直接拒绝。
+  // 它们自身的选项就能读写工作区外(xargs -a<file>、env --chdir=<dir>),
+  // 递归判定被包装命令并不能覆盖这些;结构化 grep/find 工具已提供等价能力。
+  if (level === 0 && WRAPPERS.has(cmd)) {
+    return {
+      decision: "deny",
+      rule: "l0-wrapper",
+      reason: `L0 禁止包装命令 ${cmd}(其自身选项可越过工作区);直接使用目标命令,或用 grep/find 工具`,
+    };
   }
 
   // 包装命令:递归判定其真实目标
@@ -575,7 +742,7 @@ function segmentVerdict(segment: string, level: PermissionLevel, options: BashPo
     if (rawCmd.includes("/")) {
       return { decision: "deny", rule: "l0-path-exec", reason: "L0 禁止按路径执行程序/脚本" };
     }
-    if (!L0_ALLOW.has(cmd)) {
+    if (!L0_ALLOWED_COMMANDS.has(cmd)) {
       const hint = L0_ALTERNATIVES[cmd];
       return {
         decision: "deny",
@@ -589,18 +756,11 @@ function segmentVerdict(segment: string, level: PermissionLevel, options: BashPo
     if (cmd === "env" || cmd === "printenv") {
       return { decision: "deny", rule: "env-dump", reason: "L0 禁止打印进程环境变量" };
     }
-    // 路径围栏:文件工具的围栏管不到 bash,`cat /data/pinery.db` 这类命令
-    // 能读到应用自身状态(其他会话、审计日志、问答留痕)
-    if (options.workspaceDir) {
-      const escaping = findEscapingArg(cmd, args, options.workspaceDir);
-      if (escaping) {
-        return {
-          decision: "deny",
-          rule: "path-escape",
-          reason: `L0 只能访问仓库工作区内的路径(越界参数:${escaping})`,
-        };
-      }
-    }
+    // 参数级白名单 + 路径围栏(command-specs.ts)。命令名只读不代表选项只读:
+    // rg --pre 起外部进程、sort -o 覆盖文件、rg --files 让路径顶替位置参数,
+    // 这些都靠「未声明即拒绝」兜住,而不依赖我们逐个识别危险选项。
+    const specVerdict = checkArgsAgainstSpec(cmd, args, options);
+    if (specVerdict) return specVerdict;
     return { decision: "allow" };
   }
 
@@ -634,10 +794,26 @@ export function evaluateBashCommand(
   const trimmed = command.trim();
   if (!trimmed) return { decision: "allow" };
 
-  const { segments, hasSubstitution, hasOutputRedirect } = splitCommand(trimmed);
+  const { segments, hasSubstitution, hasOutputRedirect, hasInputRedirect, hasExpansion } = splitCommand(trimmed);
 
+  if (level === 0 && hasInputRedirect) {
+    return {
+      decision: "deny",
+      rule: "l0-input-redirect",
+      reason: "L0 禁止输入重定向(< file);直接把文件作为参数传给命令",
+    };
+  }
   if (level === 0 && hasOutputRedirect) {
     return { decision: "deny", rule: "l0-redirect", reason: "L0 禁止输出重定向写文件" };
+  }
+  // 路径围栏在**展开前**判定,`X=/data; cat $X/pinery.db` 与 `cat ${HOME}/.ssh/id_rsa`
+  // 此刻都还不含绝对路径。L0 直接拒绝展开;字面 $ 用单引号即可(rg '\$\{' src)。
+  if (level === 0 && hasExpansion) {
+    return {
+      decision: "deny",
+      rule: "l0-expansion",
+      reason: "L0 禁止参数展开($VAR / ${VAR}):展开后的路径无法在执行前校验;需要字面 $ 请用单引号包裹",
+    };
   }
   if (level === 0 && hasSubstitution) {
     // 替换内部命令已并入 segments 逐段判定;L0 直接一刀切拒绝,减小面

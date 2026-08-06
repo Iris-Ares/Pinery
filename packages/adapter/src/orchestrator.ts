@@ -73,6 +73,22 @@ export class Orchestrator {
 
   /** 事件入口(长连接 handler 直接调用;内部自行排队,立即返回) */
   handle(msg: IncomingMessage): void {
+    try {
+      this.route(msg);
+    } catch (e) {
+      // 绝不让异常冒泡回长连接 listener —— 一条消息处理失败不能拖垮整个连接。
+      // 存储在 route() 一开始就要读(判断活跃会话),库不可用时会在这里抛。
+      const detail = filterSecrets(e instanceof Error ? e.message : String(e)).text;
+      this.log(`[orchestrator] 消息处理失败:${detail}`);
+      void this.safeReply(
+        msg,
+        errorCard(`调查未能启动:存储不可用(${detail})`, "请让管理员检查数据目录权限与磁盘空间。"),
+        msg.chatType === "group",
+      );
+    }
+  }
+
+  private route(msg: IncomingMessage): void {
     const { cfg, storage } = this.deps;
     const sessionKey = sessionKeyFor(msg);
     const row = storage.getSession(sessionKey);
@@ -163,18 +179,30 @@ export class Orchestrator {
       return;
     }
 
-    const plan = planSession(storage, cfg, msg);
+    // ack 之后的一切都必须能收敛卡片:这里的 SQLite 读写(会话规划、审计)
+    // 在库满/只读/已关闭时会抛,不接住就只剩队列日志,卡片停在「调查中」。
+    let plan: ReturnType<typeof planSession>;
     const abort = new AbortController();
-    this.running.set(sessionKey, abort);
-
-    storage.audit({
-      sessionKey,
-      taskId,
-      userId: msg.senderOpenId,
-      repo: repo.name,
-      kind: "task_start",
-      detail: question.slice(0, 500),
-    });
+    try {
+      plan = planSession(storage, cfg, msg);
+      this.running.set(sessionKey, abort);
+      storage.audit({
+        sessionKey,
+        taskId,
+        userId: msg.senderOpenId,
+        repo: repo.name,
+        kind: "task_start",
+        detail: question.slice(0, 500),
+      });
+    } catch (e) {
+      this.running.delete(sessionKey);
+      const detail = filterSecrets(e instanceof Error ? e.message : String(e)).text;
+      this.log(`[orchestrator] 前置持久化失败:${detail}`);
+      await lark
+        .patchCard(ackId, errorCard(`调查未能启动:存储不可用(${detail})`, "请让管理员检查数据目录权限与磁盘空间。"))
+        .catch(() => {});
+      return;
+    }
 
     // 进度流:事件驱动 + 节流 patch
     const lines: string[] = [];

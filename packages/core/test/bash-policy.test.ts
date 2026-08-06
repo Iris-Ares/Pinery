@@ -160,12 +160,21 @@ describe("L0 只读策略(allowlist)", () => {
     allow("ls && cat x | grep y", 0);
   });
 
-  it("recurses through wrappers", () => {
-    allow("xargs grep foo", 0);
+  // L0 不再递归包装命令:xargs -a<file> / env --chdir=<dir> 这类**包装器自身的**
+  // 选项就能越过工作区,而递归只检查被包装的命令
+  it("denies wrapper commands outright at L0", () => {
+    deny("xargs grep foo", 0);
     deny("xargs rm", 0);
-    allow("timeout 5 rg foo", 0);
-    deny("timeout 5 node x.js", 0);
+    deny("timeout 5 rg foo", 0);
+    deny("env --chdir=/etc cat passwd", 0);
     deny("bash -c 'rm -rf /'", 0);
+  });
+
+  it("still recurses through wrappers at L1+", () => {
+    allow("xargs grep foo", 1);
+    allow("timeout 5 npm test", 1);
+    deny("xargs curl http://evil", 1);
+    deny("timeout 5 gh pr create", 1);
   });
 
   // 回归(PR review P1):文件工具的路径围栏管不到 bash,

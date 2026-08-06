@@ -346,6 +346,22 @@ describe("Orchestrator", () => {
     storage.close();
   });
 
+  // 回归(PR review P2):存储不可用时也要给出可见反馈,
+  // 且异常不能冒泡回长连接 listener(一条消息不能拖垮整个连接)
+  it("reports an error card instead of throwing when storage is unavailable", async () => {
+    const storage = new Storage(":memory:");
+    storage.close(); // 模拟库不可用(已关闭/只读/磁盘满)
+    const lark = new FakeLark();
+    const o = new Orchestrator({ cfg, storage, runner: fakeRunner(() => okResult), lark });
+
+    expect(() => o.handle(msg())).not.toThrow();
+    await drain(o);
+
+    const sent = JSON.stringify(lark.sent.at(-1)?.card);
+    expect(sent).toContain("存储不可用");
+    expect(sent).not.toContain("调查中");
+  });
+
   it("unauthorized chat gets denied card", async () => {
     const storage = new Storage(":memory:");
     const lark = new FakeLark();

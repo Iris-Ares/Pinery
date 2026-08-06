@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -65,23 +66,77 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv, level: PermissionLevel): Nod
   return out;
 }
 
-/** 工作区路径围栏:相对路径按工作区解析,越界即拒(纵深防御,硬边界在容器只读挂载) */
-export function assertInsideWorkspace(workspaceDir: string, p: string, toolName: string): void {
-  const abs = isAbsolute(p) ? p : resolve(workspaceDir, p);
-  const rel = relative(resolve(workspaceDir), abs);
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return;
-  throw new PolicyViolationError(`${toolName} 拒绝访问工作区外路径:${p}`, "path-escape");
+/**
+ * Resolve a path to its real location, following symlinks. Total: for entries
+ * that do not exist yet (the write tool creating a file), resolve the nearest
+ * existing ancestor and re-append the remaining segments, so a symlinked parent
+ * directory is still followed.
+ */
+export function resolveRealPath(absolutePath: string): string {
+  let current = resolve(absolutePath);
+  const pending: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync.native(current);
+      return pending.length > 0 ? resolve(real, ...pending.reverse()) : real;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return resolve(absolutePath);
+      pending.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Workspace path fence: relative paths resolve against the workspace, anything
+ * outside is rejected. Defense in depth — the hard boundary is the container's
+ * read-only mount.
+ *
+ * The check runs twice. Lexically first, then against the real path, because
+ * git checks out repository symlinks verbatim: a repo containing
+ * `leak -> ../../pinery.db` hands the read tool the in-workspace path `leak`,
+ * which passes every lexical test while the filesystem follows it to Pinery's
+ * own state. A read-only mount does not stop reads through a symlink.
+ *
+ * `realpath` is omitted for remote workspaces (there is no host filesystem
+ * under them — the wire protocol fences paths on the Worker side instead).
+ */
+export function assertInsideWorkspace(
+  workspaceDir: string,
+  p: string,
+  toolName: string,
+  realpath: ((absolutePath: string) => string) | undefined = resolveRealPath,
+): void {
+  const root = resolve(workspaceDir);
+  const abs = isAbsolute(p) ? p : resolve(root, p);
+  if (!isInside(root, abs)) {
+    throw new PolicyViolationError(`${toolName} 拒绝访问工作区外路径:${p}`, "path-escape");
+  }
+  if (!realpath) return;
+  if (!isInside(realpath(root), realpath(abs))) {
+    throw new PolicyViolationError(`${toolName} 拒绝经符号链接访问工作区外路径:${p}`, "path-escape");
+  }
 }
 
 type AnyToolDefinition = ToolDefinition<any, any, any>;
 
-function withPathGuard(def: AnyToolDefinition, workspaceDir: string): AnyToolDefinition {
+function withPathGuard(
+  def: AnyToolDefinition,
+  workspaceDir: string,
+  realpath: ((absolutePath: string) => string) | undefined,
+): AnyToolDefinition {
   return {
     ...def,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const path = (params as { path?: unknown } | undefined)?.path;
       if (typeof path === "string" && path.length > 0) {
-        assertInsideWorkspace(workspaceDir, path, def.name);
+        assertInsideWorkspace(workspaceDir, path, def.name, realpath);
       }
       return def.execute(toolCallId, params, signal, onUpdate, ctx);
     },
@@ -128,11 +183,17 @@ export interface BuildToolsetOptions {
 export function buildToolset(options: BuildToolsetOptions): AnyToolDefinition[] {
   const { cwd, level, onPolicyBlock, operations } = options;
 
+  // Symlink resolution only makes sense against the host filesystem. With remote
+  // operations the workspace lives elsewhere and `cwd` does not exist locally,
+  // so resolving would fence against unrelated host paths; the Worker applies
+  // its own path fence there.
+  const realpath = operations ? undefined : resolveRealPath;
+
   const bashDef = createBashToolDefinition(cwd, {
     ...(operations?.bash ? { operations: operations.bash } : {}),
     spawnHook: (ctx) => {
       // 传入工作区目录:bash 参数也要受路径围栏约束(文件工具的围栏管不到它)
-      const verdict = evaluateBashCommand(ctx.command, level, { workspaceDir: cwd });
+      const verdict = evaluateBashCommand(ctx.command, level, { workspaceDir: cwd, realpath });
       if (verdict.decision !== "allow") {
         const reason =
           verdict.decision === "confirm"
@@ -168,7 +229,7 @@ export function buildToolset(options: BuildToolsetOptions): AnyToolDefinition[] 
           createWriteToolDefinition(cwd, ops("write")),
         ];
 
-  return defs.map((d) => withPathGuard(d, cwd));
+  return defs.map((d) => withPathGuard(d, cwd, realpath));
 }
 
 /** 工具调用的单行描述(进度卡片与审计用;截断防刷屏) */

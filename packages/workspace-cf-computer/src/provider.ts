@@ -36,6 +36,12 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   private readonly client: CfComputerClient;
   /** workspaceId → 本进程内上次同步(clone/pull)时间戳 */
   private readonly syncedAt = new Map<string, number>();
+  /**
+   * workspaceId → 进行中的准备操作。同一工作区的并发取用必须串行:
+   * 否则两个调用者都看不到 syncedAt,会各自 clone/pull 同一个 WORKSPACE_ROOT,
+   * 而 pull 可能在前一次调查正在读取时改写 checkout。
+   */
+  private readonly preparing = new Map<string, Promise<void>>();
 
   constructor(private readonly options: CfComputerProviderOptions) {
     this.client = new CfComputerClient(options);
@@ -59,7 +65,15 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   }
 
   private async acquire(repo: RepoConfig, workspaceId: string, readOnly: boolean): Promise<ProvidedWorkspace> {
-    await this.ensureRepo(repo, workspaceId);
+    // 单飞:同一工作区的并发取用共享同一次准备,失败也一并抛给各调用者
+    let pending = this.preparing.get(workspaceId);
+    if (!pending) {
+      pending = this.ensureRepo(repo, workspaceId).finally(() => {
+        if (this.preparing.get(workspaceId) === pending) this.preparing.delete(workspaceId);
+      });
+      this.preparing.set(workspaceId, pending);
+    }
+    await pending;
     return {
       handle: workspaceId,
       repo: repo.name,

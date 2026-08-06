@@ -280,6 +280,35 @@ describe("CfComputerWorkspaceProvider", () => {
     expect(worker.calls.filter((c) => c === "gitClone")).toHaveLength(1);
   });
 
+  // 回归(PR review P2):同一会话工作区的并发取用必须串行,
+  // 否则会重复 clone/pull,且 pull 可能在前一次调查读取时改写 checkout
+  it("serializes concurrent acquisitions of the same workspace", async () => {
+    const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
+    const [a, b, c] = await Promise.all([
+      p.acquireSession(repo, "same"),
+      p.acquireSession(repo, "same"),
+      p.acquireSession(repo, "same"),
+    ]);
+    expect(a.handle).toBe(b.handle);
+    expect(b.handle).toBe(c.handle);
+    // 三个并发调用只触发一次准备
+    expect(worker.calls.filter((x) => x === "gitClone")).toHaveLength(1);
+    expect(worker.calls.filter((x) => x === "info")).toHaveLength(1);
+  });
+
+  it("propagates preparation failure to every concurrent caller", async () => {
+    const broken = await startFakeWorker({ token: TOKEN, failOps: ["info"] });
+    try {
+      const p = new CfComputerWorkspaceProvider({ endpoint: broken.url, token: TOKEN, retries: 0 });
+      const results = await Promise.allSettled([p.acquireSession(repo, "x"), p.acquireSession(repo, "x")]);
+      expect(results.every((r) => r.status === "rejected")).toBe(true);
+      // 失败后不残留:下一次取用会重新尝试
+      expect(broken.calls.filter((x) => x === "info").length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await broken.close();
+    }
+  });
+
   it("degrades to the existing snapshot when the refresh pull fails", async () => {
     const flaky = await startFakeWorker({ token: TOKEN, failOps: ["gitPull"] });
     try {

@@ -168,6 +168,58 @@ describe("L0 只读策略(allowlist)", () => {
     deny("bash -c 'rm -rf /'", 0);
   });
 
+  // 回归(PR review P1):文件工具的路径围栏管不到 bash,
+  // 应用自身状态(/data 下的 SQLite、会话 JSONL、审计)必须挡在工作区之外
+  it("confines bash path arguments to the workspace", () => {
+    const WS = "/data/repos/order";
+    const d = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("deny");
+    const a = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("allow");
+
+    // 跨会话/审计/凭据泄漏面
+    d("cat /data/pinery.db");
+    d("rg secret /data/sessions/");
+    d("cat /data/agent/auth.json");
+    d("head -100 /data/pinery.yaml");
+    // 系统与家目录
+    d("cat /etc/passwd");
+    d("ls ~/.ssh");
+    d("cat ~/.aws/credentials");
+    // 相对路径穿越与规范化绕过
+    d("cat ../../../etc/passwd");
+    d("wc -l /data/../etc/passwd");
+    d("diff /etc/a /etc/b");
+    // git 的仓库外读取
+    d("git diff --no-index /etc/passwd /etc/hosts");
+
+    // 工作区内与常规调查不受影响
+    a("cat src/index.ts");
+    a("cat /data/repos/order/README.md");
+    a("rg -n refund src");
+    a("grep -rn timeout .");
+    a("find . -name '*.ts'");
+    a("wc -l src/*.ts");
+    a("git log --oneline -20");
+  });
+
+  it("does not mistake search patterns for paths", () => {
+    const WS = "/data/repos/order";
+    const a = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("allow");
+    // 首个位置参数是 pattern,不该被当成路径
+    a("rg '/api/users' src");
+    a("grep '/etc/passwd' src");
+    a("rg -n '^/v1/' .");
+    // 但 pattern 之后的路径参数仍然校验
+    expect(evaluateBashCommand("rg '/api' /etc", 0, { workspaceDir: WS }).decision).toBe("deny");
+  });
+
+  it("skips the path fence when no workspace is configured", () => {
+    // 策略引擎可独立于工作区使用(单测/离线校验)
+    expect(evaluateBashCommand("cat /etc/passwd", 0).decision).toBe("allow");
+  });
+
   it("hard-denies privilege escalation at every level", () => {
     deny("sudo ls", 0);
     deny("sudo ls", 1);

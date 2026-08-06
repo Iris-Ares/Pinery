@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { PermissionLevel } from "./levels.js";
 
 /**
@@ -23,6 +24,16 @@ export interface BashPolicyResult {
   rule?: string;
   /** 面向用户/模型的拒绝原因 */
   reason?: string;
+}
+
+export interface BashPolicyOptions {
+  /**
+   * 工作区绝对路径。提供后对命令的**路径类参数**做围栏校验——
+   * 文件工具的路径围栏管不到 bash,`cat /data/pinery.db` 这类命令能读到
+   * 应用自身的状态(其他会话、审计日志、问答留痕)。
+   * 不提供则跳过该项检查(策略引擎可独立于工作区使用)。
+   */
+  workspaceDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +322,7 @@ const L0_GIT_SUBCOMMANDS = new Set([
  *   git ls-remote --upload-pack= → 远端命令注入
  */
 const L0_GIT_UNSAFE_OPTION_PREFIXES = [
+  "--no-index", // git diff --no-index /etc/a /etc/b 可读仓库外任意文件
   "--output",
   "--ext-diff",
   "--textconv",
@@ -351,6 +363,62 @@ const DELIVERY_COMMANDS = new Set(["gh", "glab"]);
 /** L1+ 拒绝:容器/编排/发布 */
 const L1_DENY = new Set(["docker", "podman", "kubectl", "helm", "nerdctl", "terraform", "pulumi"]);
 
+// ---------------------------------------------------------------------------
+// 路径参数围栏
+// ---------------------------------------------------------------------------
+
+/**
+ * 命令的**第一个非选项参数是 pattern 而非路径**。校验时跳过它,
+ * 否则 `rg '/api/users' src` 会被误判为访问 /api/users。
+ */
+const PATTERN_FIRST_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "ag"]);
+
+/** 这些命令的参数不是文件路径(ref/格式串/表达式),跳过路径校验 */
+const NO_PATH_ARG_COMMANDS = new Set(["echo", "printf", "seq", "expr", "date", "which", "type", "test", "["]);
+
+/**
+ * 判断参数是否指向工作区之外。
+ * 只检查「看起来是路径」的参数:绝对路径、~ 开头、含 .. 穿越的相对路径。
+ * 普通相对路径(src/a.ts)由 cwd 保证落在工作区内。
+ */
+export function argEscapesWorkspace(arg: string, workspaceDir: string): boolean {
+  if (!arg) return false;
+  // 选项:检查 --opt=<value> 的值部分,其余跳过
+  if (arg.startsWith("-")) {
+    const eq = arg.indexOf("=");
+    if (eq < 0) return false;
+    return argEscapesWorkspace(arg.slice(eq + 1), workspaceDir);
+  }
+  // ~ 会被 shell 展开到 HOME,一律拒绝
+  if (arg === "~" || arg.startsWith("~/")) return true;
+
+  const looksAbsolute = arg.startsWith("/");
+  const hasTraversal = arg === ".." || arg.startsWith("../") || arg.includes("/../") || arg.endsWith("/..");
+  if (!looksAbsolute && !hasTraversal) return false;
+
+  const root = resolve(workspaceDir);
+  const target = looksAbsolute ? resolve(arg) : resolve(root, arg);
+  if (target === root) return false;
+  return !target.startsWith(`${root}/`);
+}
+
+/** 逐参数校验路径围栏;越界返回该参数 */
+function findEscapingArg(cmd: string, args: string[], workspaceDir: string): string | undefined {
+  if (NO_PATH_ARG_COMMANDS.has(cmd)) return undefined;
+  const skipFirstPositional = PATTERN_FIRST_COMMANDS.has(cmd);
+  let seenPositional = false;
+  for (const arg of args) {
+    const isPositional = !arg.startsWith("-");
+    if (isPositional && skipFirstPositional && !seenPositional) {
+      seenPositional = true;
+      continue; // pattern,不是路径
+    }
+    if (isPositional) seenPositional = true;
+    if (argEscapesWorkspace(arg, workspaceDir)) return arg;
+  }
+  return undefined;
+}
+
 /** find 的执行/删除动作 */
 function findHasExec(args: string[]): boolean {
   return args.some((a) =>
@@ -358,7 +426,7 @@ function findHasExec(args: string[]): boolean {
   );
 }
 
-function gitVerdict(args: string[], level: PermissionLevel): BashPolicyResult {
+function gitVerdict(args: string[], level: PermissionLevel, options: BashPolicyOptions): BashPolicyResult {
   // 跳过 -C <dir> / -c k=v / --no-pager 等前置全局参数,定位子命令
   let i = 0;
   let sawConfigFlag = false;
@@ -398,7 +466,8 @@ function gitVerdict(args: string[], level: PermissionLevel): BashPolicyResult {
         reason: `L0 仅允许 git 只读子命令(${sub ?? "?"} 不在白名单)`,
       };
     }
-    // 只读子命令仍可能带写盘/执行选项(--output= 直接落盘、--ext-diff 执行外部程序)
+    // 只读子命令仍可能带写盘/执行选项(--output= 直接落盘、--ext-diff 执行外部程序、
+    // --no-index 让 git diff 读取仓库外任意两个文件)
     const unsafe = args.find((a) => gitUnsafeOption(a));
     if (unsafe) {
       return {
@@ -406,6 +475,16 @@ function gitVerdict(args: string[], level: PermissionLevel): BashPolicyResult {
         rule: "git-unsafe-option",
         reason: `L0 禁止 git 写盘/执行类选项:${unsafe}`,
       };
+    }
+    if (options.workspaceDir) {
+      const escaping = args.find((a) => argEscapesWorkspace(a, options.workspaceDir as string));
+      if (escaping) {
+        return {
+          decision: "deny",
+          rule: "path-escape",
+          reason: `L0 只能访问仓库工作区内的路径(越界参数:${escaping})`,
+        };
+      }
     }
     return { decision: "allow" };
   }
@@ -426,7 +505,7 @@ function gitVerdict(args: string[], level: PermissionLevel): BashPolicyResult {
   return { decision: "allow" };
 }
 
-function segmentVerdict(segment: string, level: PermissionLevel): BashPolicyResult {
+function segmentVerdict(segment: string, level: PermissionLevel, options: BashPolicyOptions): BashPolicyResult {
   const parsed = parseSegment(segment);
   if (!parsed) return { decision: "allow" };
   const { cmd, rawCmd, args } = parsed;
@@ -455,14 +534,14 @@ function segmentVerdict(segment: string, level: PermissionLevel): BashPolicyResu
         ? { decision: "deny", rule: "l0-allowlist", reason: `L0 白名单外命令:${cmd}` }
         : { decision: "allow" };
     }
-    return segmentVerdict(rest.join(" "), level);
+    return segmentVerdict(rest.join(" "), level, options);
   }
 
   // shell -c 递归
   if (cmd === "sh" || cmd === "bash" || cmd === "zsh" || cmd === "dash") {
     const cIdx = args.indexOf("-c");
     if (cIdx >= 0 && args[cIdx + 1]) {
-      return evaluateBashCommand(args[cIdx + 1]!, level);
+      return evaluateBashCommand(args[cIdx + 1]!, level, options);
     }
     if (level === 0) {
       return { decision: "deny", rule: "l0-shell-exec", reason: "L0 禁止执行脚本" };
@@ -486,7 +565,7 @@ function segmentVerdict(segment: string, level: PermissionLevel): BashPolicyResu
     return { decision: "confirm", rule: `delivery:${cmd}`, reason: `${cmd} 操作需确认` };
   }
 
-  if (cmd === "git") return gitVerdict(args, level);
+  if (cmd === "git") return gitVerdict(args, level, options);
 
   if (level === 0) {
     if (rawCmd.includes("/")) {
@@ -505,6 +584,18 @@ function segmentVerdict(segment: string, level: PermissionLevel): BashPolicyResu
     }
     if (cmd === "env" || cmd === "printenv") {
       return { decision: "deny", rule: "env-dump", reason: "L0 禁止打印进程环境变量" };
+    }
+    // 路径围栏:文件工具的围栏管不到 bash,`cat /data/pinery.db` 这类命令
+    // 能读到应用自身状态(其他会话、审计日志、问答留痕)
+    if (options.workspaceDir) {
+      const escaping = findEscapingArg(cmd, args, options.workspaceDir);
+      if (escaping) {
+        return {
+          decision: "deny",
+          rule: "path-escape",
+          reason: `L0 只能访问仓库工作区内的路径(越界参数:${escaping})`,
+        };
+      }
     }
     return { decision: "allow" };
   }
@@ -531,7 +622,11 @@ function segmentVerdict(segment: string, level: PermissionLevel): BashPolicyResu
  * 判定一条 bash 命令在给定级别下的执行策略。
  * 复合命令取所有段的最严格判定(deny > confirm > allow)。
  */
-export function evaluateBashCommand(command: string, level: PermissionLevel): BashPolicyResult {
+export function evaluateBashCommand(
+  command: string,
+  level: PermissionLevel,
+  options: BashPolicyOptions = {},
+): BashPolicyResult {
   const trimmed = command.trim();
   if (!trimmed) return { decision: "allow" };
 
@@ -547,7 +642,7 @@ export function evaluateBashCommand(command: string, level: PermissionLevel): Ba
 
   let worst: BashPolicyResult = { decision: "allow" };
   for (const seg of segments) {
-    const v = segmentVerdict(seg, level);
+    const v = segmentVerdict(seg, level, options);
     if (v.decision === "deny") return v;
     if (v.decision === "confirm") worst = v;
   }

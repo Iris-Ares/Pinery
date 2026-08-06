@@ -24,13 +24,18 @@ export interface CfComputerProviderOptions extends CfComputerClientOptions {
   /** clone 深度(0 = 完整克隆);默认 1 */
   cloneDepth?: number;
   execTimeoutMs?: number;
+  /**
+   * 会话工作区的刷新间隔(ms)。超过该时长的工作区在下次提问前执行 git pull,
+   * 对应本地路径的 workspace.pull_interval_min。默认 10 分钟。
+   */
+  refreshIntervalMs?: number;
 }
 
 export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   readonly kind = "cf-computer";
   private readonly client: CfComputerClient;
-  /** 已初始化(clone 完成)的工作区 id */
-  private readonly initialized = new Set<string>();
+  /** workspaceId → 本进程内上次同步(clone/pull)时间戳 */
+  private readonly syncedAt = new Map<string, number>();
 
   constructor(private readonly options: CfComputerProviderOptions) {
     this.client = new CfComputerClient(options);
@@ -47,7 +52,7 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   async release(ws: ProvidedWorkspace, opts: { keep?: boolean } = {}): Promise<void> {
     if (!ws.handle.startsWith("t-")) return; // 会话工作区常驻(DO 休眠即封存,不计费)
     if (opts.keep) return; // 失败保留现场供排查
-    this.initialized.delete(ws.handle);
+    this.syncedAt.delete(ws.handle);
     await this.client.call(ws.handle, { op: "rm", path: WORKSPACE_ROOT, recursive: true }).catch(() => {
       // 清理失败不影响主流程;DO 空闲后自行休眠
     });
@@ -70,9 +75,12 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
     };
   }
 
-  /** 幂等:远端已有该仓库则跳过(DO 唤醒后 VFS 仍在) */
+  /**
+   * 准备仓库内容。会话工作区的 VFS 是持久的(DO 休眠即封存),因此除了
+   * 首次 clone,还必须**按同步策略刷新**——否则长期存在的话题会一直基于
+   * 初始浅克隆回答,仓库更新后答案静默过时(远程后端下本地 pull loop 也不跑)。
+   */
   private async ensureRepo(repo: RepoConfig, workspaceId: string): Promise<void> {
-    if (this.initialized.has(workspaceId)) return;
     // Computer 用 isomorphic-git,无 SSH 传输 —— 尽早给出可操作的错误,
     // 而不是等 clone 在远端失败(私有仓库用 https + token)
     if (!/^https:\/\//i.test(repo.url)) {
@@ -81,6 +89,11 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
           `请改用 https:// 形式,私有仓库用 https://<token>@host/org/repo.git`,
       );
     }
+
+    const refreshMs = this.options.refreshIntervalMs ?? 10 * 60_000;
+    const lastSync = this.syncedAt.get(workspaceId);
+    if (lastSync !== undefined && Date.now() - lastSync < refreshMs) return; // 冷却期内不重复同步
+
     const info = await this.client.call(workspaceId, { op: "info" });
     if (info.repo?.url !== repo.url) {
       await this.client.call(
@@ -88,8 +101,19 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
         { op: "gitClone", url: repo.url, depth: this.options.cloneDepth ?? 1 },
         { timeoutMs: 10 * 60_000 },
       );
+      this.syncedAt.set(workspaceId, Date.now());
+      return;
     }
-    this.initialized.add(workspaceId);
+
+    // 远端已有该仓库:按 syncedAt 判断是否需要 pull(跨进程重启也生效)
+    const remoteAge = info.syncedAt ? Date.now() - info.syncedAt : Number.POSITIVE_INFINITY;
+    if (remoteAge < refreshMs) {
+      this.syncedAt.set(workspaceId, info.syncedAt as number);
+      return;
+    }
+    // pull 失败不应阻断提问:退化为「用现有快照回答」,由审计与日志暴露
+    await this.client.call(workspaceId, { op: "gitPull" }, { timeoutMs: 5 * 60_000 }).catch(() => undefined);
+    this.syncedAt.set(workspaceId, Date.now());
   }
 }
 
@@ -128,5 +152,7 @@ export function createWorkspaceProvider(cfg: PineryConfig): WorkspaceProvider {
     execBackend: o["exec_backend"] ?? "worker-shell",
     cloneDepth: o["clone_depth"] ? Number(o["clone_depth"]) : 1,
     execTimeoutMs: o["exec_timeout_ms"] ? Number(o["exec_timeout_ms"]) : undefined,
+    // 远程后端不跑本地 pull loop,刷新节奏沿用同一个配置项
+    refreshIntervalMs: cfg.workspace.pull_interval_min > 0 ? cfg.workspace.pull_interval_min * 60_000 : undefined,
   });
 }

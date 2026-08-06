@@ -131,7 +131,8 @@ export function buildToolset(options: BuildToolsetOptions): AnyToolDefinition[] 
   const bashDef = createBashToolDefinition(cwd, {
     ...(operations?.bash ? { operations: operations.bash } : {}),
     spawnHook: (ctx) => {
-      const verdict = evaluateBashCommand(ctx.command, level);
+      // 传入工作区目录:bash 参数也要受路径围栏约束(文件工具的围栏管不到它)
+      const verdict = evaluateBashCommand(ctx.command, level, { workspaceDir: cwd });
       if (verdict.decision !== "allow") {
         const reason =
           verdict.decision === "confirm"

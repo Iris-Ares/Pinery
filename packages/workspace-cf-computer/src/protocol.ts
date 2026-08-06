@@ -29,6 +29,7 @@ export type WireRequest =
   | { op: "grep"; path: string; pattern: string; glob?: string; ignoreCase?: boolean; literal?: boolean; limit?: number }
   | { op: "exec"; command: string; cwd?: string; timeoutMs?: number; backend?: string }
   | { op: "gitClone"; url: string; ref?: string; depth?: number }
+  | { op: "gitPull"; ref?: string }
   | { op: "info" };
 
 export type WireOp = WireRequest["op"];
@@ -64,6 +65,8 @@ export interface WireInfo {
   backends: string[];
   /** 已 clone 的仓库(便于 provider 判断是否需要初始化) */
   repo?: { url: string; ref?: string; head?: string };
+  /** 上次 clone/pull 的时间戳(ms),provider 据此决定是否刷新 */
+  syncedAt?: number;
 }
 
 export type WireResultMap = {
@@ -77,6 +80,7 @@ export type WireResultMap = {
   grep: { matches: WireGrepMatch[] };
   exec: WireExecResult;
   gitClone: { head?: string };
+  gitPull: { updated: boolean; detail?: string };
   info: WireInfo;
 };
 

@@ -28,10 +28,12 @@ export {
   type ResolvedPaths,
 } from "./config.js";
 export {
+  argEscapesWorkspace,
   evaluateBashCommand,
   splitCommand,
   tokenize,
   type BashDecision,
+  type BashPolicyOptions,
   type BashPolicyResult,
   type SplitResult,
 } from "./bash-policy.js";

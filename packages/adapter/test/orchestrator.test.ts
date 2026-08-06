@@ -296,6 +296,56 @@ describe("Orchestrator", () => {
     storage.close();
   });
 
+  // 回归(PR review P2):runner 可能在 prompt 之前就 reject(pi 的 setup 阶段)
+  it("patches an error card when the runner rejects during setup", async () => {
+    const storage = new Storage(":memory:");
+    const lark = new FakeLark();
+    const o = new Orchestrator({
+      cfg,
+      storage,
+      runner: { kind: "fake", run: () => Promise.reject(new Error("createAgentSession failed")) },
+      lark,
+    });
+    o.handle(msg());
+    await drain(o);
+
+    const final = JSON.stringify(lark.patches.at(-1));
+    expect(final).toContain("调查未能启动");
+    expect(final).toContain("createAgentSession failed");
+    expect(final).not.toContain("调查中");
+    expect(storage.listQa()).toHaveLength(0);
+    storage.close();
+  });
+
+  // 回归(PR review P2):流式中断会带回部分文本但没有 aborted 标记
+  it("never presents a failed run as a successful answer", async () => {
+    const storage = new Storage(":memory:");
+    const lark = new FakeLark();
+    const o = new Orchestrator({
+      cfg,
+      storage,
+      runner: fakeRunner(() => ({
+        ...okResult,
+        ok: false,
+        aborted: undefined,
+        error: "stream disconnected",
+      })),
+      lark,
+    });
+    o.handle(msg());
+    await drain(o);
+
+    const final = JSON.stringify(lark.patches.at(-1));
+    expect(final).toContain("调查未能完成");
+    expect(final).toContain("stream disconnected");
+    expect(final).toContain("不完整"); // 部分线索必须标注
+    expect(final).not.toContain("AKIAIOSFODNN7EXAMPLE"); // 仍过 secret 过滤
+    // 不污染 golden set 与会话记忆
+    expect(storage.listQa()).toHaveLength(0);
+    expect(storage.getSession("thread:om_q")).toBeUndefined();
+    storage.close();
+  });
+
   it("unauthorized chat gets denied card", async () => {
     const storage = new Storage(":memory:");
     const lark = new FakeLark();

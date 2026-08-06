@@ -240,6 +240,74 @@ describe("CfComputerWorkspaceProvider", () => {
     ).rejects.toThrow(/HTTPS/);
   });
 
+  // 回归(PR review P2):会话工作区的 VFS 是持久的,长期话题必须按同步策略刷新,
+  // 否则会一直基于初次浅克隆回答(远程后端下本地 pull loop 也不跑)
+  it("refreshes a stale session workspace instead of answering from the initial clone", async () => {
+    const p = new CfComputerWorkspaceProvider({
+      endpoint: worker.url,
+      token: TOKEN,
+      retries: 0,
+      refreshIntervalMs: 60_000,
+    });
+    await p.acquireSession(repo, "k");
+    expect(worker.calls.filter((c) => c === "gitClone")).toHaveLength(1);
+    expect(worker.calls.filter((c) => c === "gitPull")).toHaveLength(0);
+
+    // 远端已陈旧(上次同步在刷新窗口之外)→ 下次取用应触发 pull
+    worker.setSyncedAt(Date.now() - 10 * 60_000);
+    const fresh = new CfComputerWorkspaceProvider({
+      endpoint: worker.url,
+      token: TOKEN,
+      retries: 0,
+      refreshIntervalMs: 60_000,
+    });
+    await fresh.acquireSession(repo, "k");
+    expect(worker.calls.filter((c) => c === "gitPull")).toHaveLength(1);
+    expect(worker.calls.filter((c) => c === "gitClone")).toHaveLength(1); // 不重复克隆
+  });
+
+  it("does not re-sync within the refresh window", async () => {
+    const p = new CfComputerWorkspaceProvider({
+      endpoint: worker.url,
+      token: TOKEN,
+      retries: 0,
+      refreshIntervalMs: 60_000,
+    });
+    await p.acquireSession(repo, "k");
+    await p.acquireSession(repo, "k");
+    await p.acquireSession(repo, "k");
+    expect(worker.calls.filter((c) => c === "gitPull")).toHaveLength(0);
+    expect(worker.calls.filter((c) => c === "gitClone")).toHaveLength(1);
+  });
+
+  it("degrades to the existing snapshot when the refresh pull fails", async () => {
+    const flaky = await startFakeWorker({ token: TOKEN, failOps: ["gitPull"] });
+    try {
+      const p = new CfComputerWorkspaceProvider({
+        endpoint: flaky.url,
+        token: TOKEN,
+        retries: 0,
+        refreshIntervalMs: 60_000,
+      });
+      await p.acquireSession(repo, "k"); // 首次 clone
+      flaky.setSyncedAt(Date.now() - 10 * 60_000); // 变陈旧
+
+      const fresh = new CfComputerWorkspaceProvider({
+        endpoint: flaky.url,
+        token: TOKEN,
+        retries: 0,
+        refreshIntervalMs: 60_000,
+      });
+      // pull 失败不应阻断提问 —— 用现有快照回答好过完全不回答
+      const ws = await fresh.acquireSession(repo, "k");
+      expect(ws.dir).toBe(WORKSPACE_ROOT);
+      expect(ws.operations).toBeDefined();
+      expect(flaky.calls.filter((c) => c === "gitPull")).toHaveLength(1);
+    } finally {
+      await flaky.close();
+    }
+  });
+
   it("release removes task workspaces but keeps session workspaces", async () => {
     const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
     const task = await p.acquireTask(repo, "t1");

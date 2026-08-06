@@ -218,7 +218,7 @@ export class Orchestrator {
     }
 
     const checkoutDir = workspace.dir;
-    let result;
+    let result: Awaited<ReturnType<AgentRunner["run"]>>;
     try {
       result = await runner.run(
         {
@@ -261,6 +261,19 @@ export class Orchestrator {
           },
         },
       );
+    } catch (e) {
+      // runner 可能在 prompt 之前就 reject(pi 的 resourceLoader/session/
+      // createAgentSession 等 setup 阶段,或第三方 runner 实现)。不收敛的话
+      // 异常只会到达队列日志,卡片永远停在「调查中」。
+      const detail = filterSecrets(e instanceof Error ? e.message : String(e)).text;
+      await lark
+        .patchCard(
+          ackId,
+          errorCard(`调查未能启动:${detail}`, "多为模型凭据或运行环境问题,请让管理员运行 pinery doctor 检查。"),
+        )
+        .catch(() => {});
+      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: `runner: ${detail}` });
+      return;
     } finally {
       if (patchTimer) clearTimeout(patchTimer);
       this.running.delete(sessionKey);
@@ -295,16 +308,21 @@ export class Orchestrator {
       return;
     }
 
-    if (!result.ok && !result.answer) {
-      await lark
-        .patchCard(
-          ackId,
-          errorCard(
-            `调查未能完成:${filterSecrets(result.error ?? "未知错误").text}`,
-            "可以稍后重试;若持续失败请让管理员运行 pinery doctor 检查配置。",
-          ),
-        )
-        .catch(() => {});
+    // 失败一律不走成功路径:流式中断等情况会带回部分文本而没有 aborted 标记,
+    // 那不是答案 —— 展示可以,但必须标注不完整,且不进 golden set 与会话记忆。
+    if (!result.ok) {
+      const card = errorCard(
+        `调查未能完成:${filterSecrets(result.error ?? "未知错误").text}`,
+        "可以稍后重试;若持续失败请让管理员运行 pinery doctor 检查配置。",
+      );
+      const partial = filterSecrets(parseLayeredAnswer(result.answer).conclusion).text.trim();
+      if (partial) {
+        card.body.elements.push(
+          { tag: "hr" },
+          { tag: "markdown", content: `**中断前的部分线索(不完整,勿直接采信)**\n${partial.slice(0, 800)}` },
+        );
+      }
+      await lark.patchCard(ackId, card).catch(() => {});
       storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: result.error ?? "unknown" });
       return;
     }

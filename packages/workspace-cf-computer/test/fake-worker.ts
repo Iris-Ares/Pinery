@@ -13,6 +13,8 @@ export interface FakeWorkerOptions {
   failFirst?: number;
   /** 人为延迟(验证超时) */
   delayMs?: number;
+  /** 指定 op 始终失败(验证单点故障下的降级) */
+  failOps?: string[];
 }
 
 interface FileNode {
@@ -27,6 +29,8 @@ export interface FakeWorker {
   files: Map<string, FileNode>;
   execHandler: (command: string, cwd: string) => { stdout: string; stderr: string; exitCode: number };
   cloned?: { url: string; ref?: string };
+  /** 让测试把远端同步时间往回调,模拟「工作区已陈旧」 */
+  setSyncedAt: (ts: number | undefined) => void;
 }
 
 const ROOT = "/workspace";
@@ -36,8 +40,9 @@ export async function startFakeWorker(options: FakeWorkerOptions): Promise<FakeW
   const calls: string[] = [];
   let remainingFailures = options.failFirst ?? 0;
 
-  const state: Pick<FakeWorker, "execHandler" | "cloned"> = {
+  const state: Pick<FakeWorker, "execHandler" | "cloned"> & { syncedAt?: number; pulls: number } = {
     execHandler: () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    pulls: 0,
   };
 
   const dirsOf = (path: string): Set<string> => {
@@ -89,12 +94,27 @@ export async function startFakeWorker(options: FakeWorkerOptions): Promise<FakeW
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as WireRequest;
         calls.push(body.op);
 
+        if (options.failOps?.includes(body.op)) {
+          return failWith("internal", `${body.op} 故障(测试注入)`);
+        }
+
         switch (body.op) {
           case "info":
             return send(200, {
               ok: true,
-              result: { protocol: 1, workspaceId: "fake", backends: ["worker-shell"], repo: state.cloned },
+              result: {
+                protocol: 1,
+                workspaceId: "fake",
+                backends: ["worker-shell"],
+                repo: state.cloned,
+                syncedAt: state.syncedAt,
+              },
             });
+
+          case "gitPull":
+            state.pulls++;
+            state.syncedAt = Date.now();
+            return send(200, { ok: true, result: { updated: true } });
 
           case "stat": {
             const f = files.get(body.path);
@@ -170,6 +190,7 @@ export async function startFakeWorker(options: FakeWorkerOptions): Promise<FakeW
 
           case "gitClone": {
             state.cloned = { url: body.url, ref: body.ref };
+            state.syncedAt = Date.now();
             files.set(`${ROOT}/README.md`, { content: Buffer.from("# cloned\n") });
             return send(200, { ok: true, result: {} });
           }
@@ -198,6 +219,9 @@ export async function startFakeWorker(options: FakeWorkerOptions): Promise<FakeW
     },
     get cloned() {
       return state.cloned;
+    },
+    setSyncedAt: (ts) => {
+      state.syncedAt = ts;
     },
   };
 }

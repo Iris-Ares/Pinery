@@ -259,16 +259,38 @@ function parseSegment(segment: string): ParsedSegment | null {
 // 规则表
 // ---------------------------------------------------------------------------
 
-/** L0 只读命令 allowlist */
+/**
+ * L0 只读命令 allowlist。
+ *
+ * 刻意排除「图灵完备的文本处理器」——它们的程序文本里带执行与写盘能力,
+ * 只看命令名无法判定安全:
+ *   awk 'BEGIN { system("curl …") }'      → 任意命令执行
+ *   awk '{ print > "/tmp/x" }'            → 任意写文件
+ *   sed 's/a/b/w /tmp/x'  /  sed -i       → 写文件(GNU sed 的 e 标志还能执行)
+ *   yq -i / yq eval -i                    → 就地改写文件
+ * 调查场景用 rg/grep/cut/head/sort 完全够用,故整体移出 L0(L1+ 不受限)。
+ */
 const L0_ALLOW = new Set([
   "ls", "cat", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "nl",
   "grep", "egrep", "fgrep", "rg", "ag", "fd", "find", "tree", "file", "stat",
   "du", "df", "basename", "dirname", "realpath", "readlink", "pwd", "echo",
   "printf", "date", "diff", "comm", "join", "paste", "seq", "expr", "test", "[",
   "true", "false", "which", "type", "md5", "md5sum", "shasum", "sha256sum",
-  "cksum", "strings", "iconv", "zcat", "jq", "yq", "column", "xargs", "awk",
-  "sed", "git", "wc", "od", "hexdump",
+  "cksum", "strings", "iconv", "zcat", "jq", "column", "xargs",
+  "git", "od", "hexdump",
 ]);
+
+/** L0 拒绝时给出可操作的替代方案,避免 agent 反复试探 */
+const L0_ALTERNATIVES: Record<string, string> = {
+  awk: "awk 程序可执行命令与写文件,L0 不可用;字段提取用 cut,过滤用 rg/grep,计数用 wc",
+  sed: "sed 可写文件(w 标志 / -i),L0 不可用;文本查看用 rg/grep/head/tail",
+  yq: "yq 可就地改写文件,L0 不可用;读取 YAML 用 rg/grep 或 cat",
+  perl: "perl 可执行任意代码,L0 不可用",
+  python: "L0 不执行脚本",
+  python3: "L0 不执行脚本",
+  node: "L0 不执行脚本",
+  ruby: "L0 不执行脚本",
+};
 
 /** 需要递归判定其目标命令的包装命令 */
 const WRAPPERS = new Set(["xargs", "timeout", "nice", "command", "env", "nohup", "stdbuf", "time"]);
@@ -279,6 +301,36 @@ const L0_GIT_SUBCOMMANDS = new Set([
   "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file", "grep",
   "count-objects", "whatchanged", "reflog", "version", "help",
 ]);
+
+/**
+ * 即使子命令只读,这些选项仍能写盘或执行外部程序 —— L0 一律拒绝:
+ *   git show --output=/path      → diff 家族直接写文件(无需 shell 重定向)
+ *   git log --ext-diff           → 调用外部 diff 驱动(执行)
+ *   git show --textconv          → 调用 textconv filter(执行,且由仓库配置驱动)
+ *   git grep --open-files-in-pager → 启动 pager(执行)
+ *   git ls-remote --upload-pack= → 远端命令注入
+ */
+const L0_GIT_UNSAFE_OPTION_PREFIXES = [
+  "--output",
+  "--ext-diff",
+  "--textconv",
+  "--open-files-in-pager",
+  "--upload-pack",
+  "--receive-pack",
+  "--exec",
+  "--to-command",
+  "--pager",
+];
+
+/** 短选项形态(-o file / -O):在只读子命令上同样可能落盘或起 pager */
+const L0_GIT_UNSAFE_SHORT_OPTIONS = new Set(["-o", "-O"]);
+
+function gitUnsafeOption(arg: string): boolean {
+  if (L0_GIT_UNSAFE_SHORT_OPTIONS.has(arg)) return true;
+  // -O<file> / -o<file> 紧贴写法
+  if (/^-[oO]./.test(arg)) return true;
+  return L0_GIT_UNSAFE_OPTION_PREFIXES.some((p) => arg === p || arg.startsWith(`${p}=`));
+}
 
 /** 任何级别都直接拒绝的命令(提权/毁灭性系统操作) */
 const HARD_DENY = new Set([
@@ -298,11 +350,6 @@ const DELIVERY_COMMANDS = new Set(["gh", "glab"]);
 
 /** L1+ 拒绝:容器/编排/发布 */
 const L1_DENY = new Set(["docker", "podman", "kubectl", "helm", "nerdctl", "terraform", "pulumi"]);
-
-/** sed 写盘检测 */
-function sedIsInPlace(args: string[]): boolean {
-  return args.some((a) => a === "-i" || a.startsWith("-i.") || a.startsWith("--in-place"));
-}
 
 /** find 的执行/删除动作 */
 function findHasExec(args: string[]): boolean {
@@ -351,7 +398,15 @@ function gitVerdict(args: string[], level: PermissionLevel): BashPolicyResult {
         reason: `L0 仅允许 git 只读子命令(${sub ?? "?"} 不在白名单)`,
       };
     }
-    // 只读子命令也不许带 pager/hook 注入选项
+    // 只读子命令仍可能带写盘/执行选项(--output= 直接落盘、--ext-diff 执行外部程序)
+    const unsafe = args.find((a) => gitUnsafeOption(a));
+    if (unsafe) {
+      return {
+        decision: "deny",
+        rule: "git-unsafe-option",
+        reason: `L0 禁止 git 写盘/执行类选项:${unsafe}`,
+      };
+    }
     return { decision: "allow" };
   }
 
@@ -438,10 +493,12 @@ function segmentVerdict(segment: string, level: PermissionLevel): BashPolicyResu
       return { decision: "deny", rule: "l0-path-exec", reason: "L0 禁止按路径执行程序/脚本" };
     }
     if (!L0_ALLOW.has(cmd)) {
-      return { decision: "deny", rule: "l0-allowlist", reason: `L0 白名单外命令:${cmd}` };
-    }
-    if (cmd === "sed" && sedIsInPlace(args)) {
-      return { decision: "deny", rule: "sed-in-place", reason: "L0 禁止 sed -i 写文件" };
+      const hint = L0_ALTERNATIVES[cmd];
+      return {
+        decision: "deny",
+        rule: "l0-allowlist",
+        reason: hint ?? `L0 白名单外命令:${cmd}`,
+      };
     }
     if (cmd === "find" && findHasExec(args)) {
       return { decision: "deny", rule: "find-exec", reason: "L0 禁止 find -exec/-delete" };

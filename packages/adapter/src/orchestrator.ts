@@ -198,10 +198,25 @@ export class Orchestrator {
     const model = runnerModelConfig(cfg);
 
     // 工作区经 provider 取得:本地实现返回共享 checkout,云沙箱后端返回远程工作区
-    // + operations 委托(docs/sandbox-evaluation.md §4.2)
-    const workspace: ProvidedWorkspace = this.deps.workspaces
-      ? await this.deps.workspaces.acquireSession(repo, sessionKey)
-      : { handle: `session:${sessionKey}`, repo: repo.name, dir: repoCheckoutDir(cfg, repo), readOnly: true };
+    // + operations 委托(docs/sandbox-evaluation.md §4.2)。
+    // 获取本身可能失败(远端不可达、clone 失败),必须收敛卡片与任务状态,
+    // 否则进度卡片会永远停在「调查中」。
+    let workspace: ProvidedWorkspace;
+    try {
+      workspace = this.deps.workspaces
+        ? await this.deps.workspaces.acquireSession(repo, sessionKey)
+        : { handle: `session:${sessionKey}`, repo: repo.name, dir: repoCheckoutDir(cfg, repo), readOnly: true };
+    } catch (e) {
+      if (patchTimer) clearTimeout(patchTimer);
+      this.running.delete(sessionKey);
+      const detail = filterSecrets(e instanceof Error ? e.message : String(e)).text;
+      await lark
+        .patchCard(ackId, errorCard(`工作区准备失败:${detail}`, "请让管理员运行 pinery doctor 检查仓库与工作区配置。"))
+        .catch(() => {});
+      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: `workspace: ${detail}` });
+      return;
+    }
+
     const checkoutDir = workspace.dir;
     let result;
     try {
@@ -255,24 +270,49 @@ export class Orchestrator {
 
     const durationMs = Date.now() - startedAt;
 
-    if (!result.ok && !result.answer) {
+    // 中止优先于部分输出:模型可能已吐出片段文本,但取消/超时/轮数超限的结果
+    // 不是答案 —— 既不能呈现为成功,也不能污染 golden set 与会话记忆。
+    if (result.aborted === "user") {
+      await lark.patchCard(ackId, errorCard("已按你的要求取消本次调查。")).catch(() => {});
+      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: "aborted: user" });
+      return;
+    }
+    if (result.aborted === "timeout" || result.aborted === "turn-limit") {
+      const partial = filterSecrets(parseLayeredAnswer(result.answer).conclusion).text.trim();
       const card =
         result.aborted === "timeout"
           ? timeoutCard(cfg.limits.task_timeout_min)
-          : result.aborted === "user"
-            ? errorCard("已按你的要求取消本次调查。")
-            : errorCard(
-                `调查未能完成:${filterSecrets(result.error ?? "未知错误").text}`,
-                "可以稍后重试;若持续失败请让管理员运行 pinery doctor 检查配置。",
-              );
+          : errorCard(`调查在 ${cfg.limits.session_max_turns} 轮内没有收敛,已停止。`, "把问题拆小一点再问一次会更容易得到确定答案。");
+      if (partial) {
+        // 部分结果可能有参考价值,但必须显式标注不完整
+        card.body.elements.push(
+          { tag: "hr" },
+          { tag: "markdown", content: `**中止前的部分线索(不完整,勿直接采信)**\n${partial.slice(0, 800)}` },
+        );
+      }
       await lark.patchCard(ackId, card).catch(() => {});
-      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: result.error ?? result.aborted });
+      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: `aborted: ${result.aborted}` });
+      return;
+    }
+
+    if (!result.ok && !result.answer) {
+      await lark
+        .patchCard(
+          ackId,
+          errorCard(
+            `调查未能完成:${filterSecrets(result.error ?? "未知错误").text}`,
+            "可以稍后重试;若持续失败请让管理员运行 pinery doctor 检查配置。",
+          ),
+        )
+        .catch(() => {});
+      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: result.error ?? "unknown" });
       return;
     }
 
     // 分层解析 + 出站过滤 + 截断
     const layered = this.sanitizeAnswer(parseLayeredAnswer(result.answer));
-    const head = await headInfo(checkoutDir);
+    // 远程工作区(operations 委托)的 dir 是远端路径,本地 git 读不到,跳过
+    const head = workspace.operations ? undefined : await headInfo(checkoutDir);
     const truncated = this.truncateAnswer(layered, cfg.limits.answer_max_chars);
 
     await lark

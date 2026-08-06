@@ -102,15 +102,32 @@ export async function runDoctor(opts: { config: string; online?: boolean }): Pro
       push({ name: `SQLite ${paths.storageDb}`, ok: false, detail: String(e), fatal: true });
     }
 
-    // repo checkout
-    for (const repo of cfg.repos) {
-      const dir = repoCheckoutDir(cfg, repo);
-      const exists = existsSync(join(dir, ".git"));
+    // repo checkout(仅 local provider 需要本地克隆;远程工作区由后端准备)
+    const localWorkspace = cfg.workspace.provider === "local";
+    if (!localWorkspace) {
       push({
-        name: `repo ${repo.name} checkout`,
-        ok: exists,
-        detail: exists ? dir : `${dir} 不存在 — 运行 pinery repo sync 克隆`,
+        name: "工作区后端",
+        ok: true,
+        detail: `${cfg.workspace.provider}(远程:跳过本地 checkout 检查)`,
       });
+    }
+    for (const repo of cfg.repos) {
+      if (localWorkspace) {
+        const dir = repoCheckoutDir(cfg, repo);
+        const exists = existsSync(join(dir, ".git"));
+        push({
+          name: `repo ${repo.name} checkout`,
+          ok: exists,
+          detail: exists ? dir : `${dir} 不存在 — 运行 pinery repo sync 克隆`,
+        });
+      } else if (!/^https:\/\//i.test(repo.url)) {
+        // 云工作区多用 isomorphic-git,无 SSH 传输
+        push({
+          name: `repo ${repo.name} 地址`,
+          ok: false,
+          detail: `远程工作区通常只支持 HTTPS 仓库地址(当前 ${repo.url})`,
+        });
+      }
       if (repo.chats.length === 0) {
         push({ name: `repo ${repo.name} 授权群`, ok: false, detail: "chats 为空:群聊不可用(单聊仍可用)" });
       }

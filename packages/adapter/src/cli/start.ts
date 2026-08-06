@@ -21,12 +21,20 @@ export async function runStart(opts: { config: string }): Promise<void> {
   const runner = await createRunner(cfg);
   const workspaces = await createWorkspaceProvider(cfg);
 
-  for (const repo of cfg.repos) {
-    log(`[repo] 准备 ${repo.name} …`);
-    const dir = await ensureCheckout(cfg, repo);
-    log(`[repo] ${repo.name} @ ${dir}`);
+  // 本地 checkout 只对 local provider 有意义:远程后端(CF Computer 等)的工具
+  // 全部经 operations 委托到云端工作区,本地克隆既用不上,又会让只有工作区
+  // 端点访问权限的 adapter 在启动时失败。
+  const usesLocalCheckout = workspaces.kind === "local";
+  const pullLoop = usesLocalCheckout ? startPullLoop(cfg, log) : { stop: () => {} };
+  if (usesLocalCheckout) {
+    for (const repo of cfg.repos) {
+      log(`[repo] 准备 ${repo.name} …`);
+      const dir = await ensureCheckout(cfg, repo);
+      log(`[repo] ${repo.name} @ ${dir}`);
+    }
+  } else {
+    log(`[repo] workspace provider = ${workspaces.kind},跳过本地 checkout(仓库由远端工作区准备)`);
   }
-  const pullLoop = startPullLoop(cfg, log);
 
   const lark = new LarkService(cfg.lark);
   const bot = await lark.fetchBotIdentity();

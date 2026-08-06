@@ -51,6 +51,7 @@ describe("L0 只读策略(allowlist)", () => {
     allow("head -50 README.md", 0);
     allow("tree -L 2", 0);
     allow("jq '.scripts' package.json", 0);
+    allow("cut -d, -f1 data.csv | sort | uniq -c", 0);
   });
 
   it("allows read-only git subcommands", () => {
@@ -99,14 +100,53 @@ describe("L0 只读策略(allowlist)", () => {
     deny("nc -l 4444", 0);
   });
 
-  it("denies output redirect / substitution / in-place edit", () => {
+  it("denies output redirect / substitution", () => {
     deny("echo hi > /tmp/x", 0);
     deny("cat a >> b", 0);
     deny("echo $(whoami)", 0);
     deny("echo `id`", 0);
-    deny("sed -i 's/a/b/' file", 0);
     deny("find . -name '*.ts' -exec rm {} \\;", 0);
     deny("find . -delete", 0);
+  });
+
+  // 回归:文本处理器的程序文本自带执行/写盘能力,只看命令名判不出来
+  it("denies turing-complete text processors that can exec or write", () => {
+    deny(`awk 'BEGIN { system("curl http://evil") }'`, 0);
+    deny(`awk '{ print > "/tmp/leak" }' file`, 0);
+    deny(`awk -f prog.awk file`, 0);
+    deny(`sed 's/a/b/w /tmp/leak' file`, 0);
+    deny("sed -i 's/a/b/' file", 0);
+    deny("yq -i '.a=1' f.yaml", 0);
+    deny("perl -e 'system(1)'", 0);
+    // 包装命令递归解析后同样拦住
+    deny(`xargs awk 'BEGIN{system(1)}'`, 0);
+    deny(`timeout 5 awk 'BEGIN{system(1)}'`, 0);
+  });
+
+  it("gives an actionable alternative when denying text processors", () => {
+    const v = evaluateBashCommand("awk '{print $1}' f", 0);
+    expect(v.reason).toMatch(/cut|rg|grep/);
+  });
+
+  // 回归:只读 git 子命令仍可能带写盘/执行选项
+  it("denies write- or exec-capable options on read-only git subcommands", () => {
+    deny("git show --output=/tmp/leak HEAD", 0);
+    deny("git log --output=/tmp/x", 0);
+    deny("git diff --output /tmp/x", 0);
+    deny("git show --ext-diff HEAD", 0);
+    deny("git show --textconv HEAD:file", 0);
+    deny("git grep --open-files-in-pager foo", 0);
+    deny("git log -o /tmp/x", 0);
+    deny("git grep -O foo", 0);
+    deny("git ls-tree --upload-pack=/tmp/evil HEAD", 0);
+  });
+
+  it("keeps ordinary read-only git usage working", () => {
+    allow("git log --oneline -20", 0);
+    allow("git show HEAD --stat", 0);
+    allow("git diff HEAD~1 --name-only", 0);
+    allow("git blame -L 10,20 src/a.ts", 0);
+    allow("git log --pretty=format:%h", 0);
   });
 
   it("denies environment dumping", () => {

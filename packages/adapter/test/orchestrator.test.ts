@@ -1,4 +1,4 @@
-import { parseConfig, type AgentRunner, type RunnerResult } from "@pinery/core";
+import { parseConfig, type AgentRunner, type RunnerResult, type WorkspaceProvider } from "@pinery/core";
 import { describe, expect, it } from "vitest";
 import type { IncomingMessage } from "../src/lark/events.js";
 import { Orchestrator, type LarkMessenger } from "../src/orchestrator.js";
@@ -195,6 +195,104 @@ describe("Orchestrator", () => {
     o.handle(msg({ messageId: "om_2", rootId: "om_1", mentionsBot: false, text: "那部分退款呢?" }));
     await drain(o);
     expect(resumes).toEqual([undefined, "/tmp/s.jsonl"]);
+    storage.close();
+  });
+
+  // 回归(PR review P2):工作区获取失败必须收敛卡片与任务状态,
+  // 否则进度卡片永远停在「调查中」
+  it("patches an error card when workspace acquisition fails", async () => {
+    const storage = new Storage(":memory:");
+    const lark = new FakeLark();
+    // 首次失败、之后恢复:既验证错误收敛,也验证没有残留状态卡住后续任务
+    let attempts = 0;
+    const flakyWorkspaces: WorkspaceProvider = {
+      kind: "fake-remote",
+      acquireSession: (repo, key) => {
+        attempts++;
+        if (attempts === 1) return Promise.reject(new Error("cloudflare endpoint unreachable"));
+        return Promise.resolve({ handle: `remote:${key}`, repo: repo.name, dir: "/workspace", readOnly: true });
+      },
+      acquireTask: () => Promise.reject(new Error("not used")),
+      release: () => Promise.resolve(),
+    };
+    const o = new Orchestrator({
+      cfg,
+      storage,
+      runner: fakeRunner(() => okResult),
+      lark,
+      workspaces: flakyWorkspaces,
+    });
+    o.handle(msg());
+    await drain(o);
+
+    const failed = JSON.stringify(lark.patches.at(-1));
+    expect(failed).toContain("工作区准备失败");
+    expect(failed).toContain("cloudflare endpoint unreachable");
+    expect(failed).not.toContain("调查中");
+    expect(storage.listQa()).toHaveLength(0);
+
+    // 同一会话的下一条消息不被残留的 running 状态卡住
+    o.handle(msg({ messageId: "om_next" }));
+    await drain(o);
+    expect(JSON.stringify(lark.patches.at(-1))).toContain("会退款");
+    expect(storage.listQa()).toHaveLength(1);
+    storage.close();
+  });
+
+  // 回归(PR review P2):中止优先于部分输出
+  it("treats a user cancellation as aborted even when partial text exists", async () => {
+    const storage = new Storage(":memory:");
+    const lark = new FakeLark();
+    const o = new Orchestrator({
+      cfg,
+      storage,
+      runner: fakeRunner(() => ({ ...okResult, ok: false, aborted: "user" as const })),
+      lark,
+    });
+    o.handle(msg());
+    await drain(o);
+
+    const final = JSON.stringify(lark.patches.at(-1));
+    expect(final).toContain("取消");
+    expect(final).not.toContain("会退款"); // 不得把片段呈现为答案
+    expect(storage.listQa()).toHaveLength(0); // 不污染 golden set
+    expect(storage.getSession("thread:om_q")).toBeUndefined(); // 不写入会话记忆
+    storage.close();
+  });
+
+  it("marks timeout partial output as incomplete and keeps it out of the golden set", async () => {
+    const storage = new Storage(":memory:");
+    const lark = new FakeLark();
+    const o = new Orchestrator({
+      cfg,
+      storage,
+      runner: fakeRunner(() => ({ ...okResult, ok: false, aborted: "timeout" as const })),
+      lark,
+    });
+    o.handle(msg());
+    await drain(o);
+
+    const final = JSON.stringify(lark.patches.at(-1));
+    expect(final).toContain("超时");
+    expect(final).toContain("不完整"); // 部分线索必须标注
+    expect(final).not.toContain("AKIAIOSFODNN7EXAMPLE"); // 部分内容同样过 secret 过滤
+    expect(storage.listQa()).toHaveLength(0);
+    storage.close();
+  });
+
+  it("turn-limit abort does not present as a successful answer", async () => {
+    const storage = new Storage(":memory:");
+    const lark = new FakeLark();
+    const o = new Orchestrator({
+      cfg,
+      storage,
+      runner: fakeRunner(() => ({ ...okResult, ok: false, aborted: "turn-limit" as const })),
+      lark,
+    });
+    o.handle(msg());
+    await drain(o);
+    expect(JSON.stringify(lark.patches.at(-1))).toContain("没有收敛");
+    expect(storage.listQa()).toHaveLength(0);
     storage.close();
   });
 

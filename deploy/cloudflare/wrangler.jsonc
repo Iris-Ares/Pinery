@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pinery-computer",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-01",
+  // nodejs_compat: @cloudflare/computer 需要;experimental: Worker Loader(worker-shell 后端)
+  "compatibility_flags": ["nodejs_compat", "experimental"],
+
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACE", "class_name": "PineryWorkspace" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PineryWorkspace"] }],
+
+  // worker-shell 后端(免容器、毫秒级,适合 L0 只读调查)
+  "worker_loaders": [{ "binding": "LOADER" }],
+
+  "observability": { "enabled": true }
+
+  // L1+ 写任务需要真 Linux 时,增配 container 后端(见 README):
+  // "containers": [{ "class_name": "PineryWorkspace", "image": "./Dockerfile", "instance_type": "standard-1" }]
+}

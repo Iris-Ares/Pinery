@@ -1,0 +1,21 @@
+{
+  "name": "@pinery/cloudflare-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinery Cloudflare Worker: hosts @cloudflare/computer workspaces behind the Pinery wire protocol",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/computer": "0.1.1",
+    "@pinery/workspace-cf-computer": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.119.0"
+  }
+}

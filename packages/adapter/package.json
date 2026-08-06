@@ -1,0 +1,33 @@
+{
+  "name": "@pinery/adapter",
+  "version": "0.1.0",
+  "description": "Pinery adapter: Feishu/Lark long-connection gateway, session routing, cards, storage, and the pinery CLI",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pinery": "./dist/cli/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.0.0",
+    "@larksuiteoapi/node-sdk": "^1.72.0",
+    "@pinery/core": "workspace:*",
+    "@pinery/runner-pi": "workspace:*",
+    "@pinery/skills": "workspace:*",
+    "commander": "^15.0.0",
+    "yaml": "^2.9.0"
+  }
+}

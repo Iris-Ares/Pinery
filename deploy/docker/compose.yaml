@@ -1,0 +1,45 @@
+# Pinery Docker Compose(主路径)
+# 用法:
+#   1. 把 pinery.yaml 放到本目录(pinery init 生成;workspace.root 保持默认即可,
+#      容器内 PINERY_CONFIG=/data/pinery.yaml,数据落在 pinery-data 卷)
+#   2. cp .env.example .env 并填入 LARK_APP_SECRET / OPENROUTER_API_KEY
+#   3. docker compose up -d
+#
+# 注意:pinery.yaml 中 workspace.root 建议设为 /data(见 examples/pinery.example.yaml)
+
+services:
+  pinery:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    volumes:
+      - pinery-data:/data
+      - ./pinery.yaml:/data/pinery.yaml:ro
+      # 私仓拉取:挂载只读 deploy key(L0 只读 key;开启 L2 后按 repo 换读写 key,PRD §3.7)
+      # - ~/.ssh/pinery_deploy_key:/root/.ssh/id_ed25519:ro
+
+  # ── 加固变体(可选,PRD §3.3 「:ro 挂载双保险」)──────────────────────────
+  # 把 repo 同步拆到 sidecar:sidecar 持读写挂载负责 clone/pull,
+  # 应用容器对 repos 目录只读挂载。启用时:
+  #   1. 取消下面 sync 服务注释
+  #   2. pinery 服务的 volumes 追加:- pinery-repos:/data/repos:ro
+  #      并在 pinery.yaml 设 workspace.pull_interval_min: 0(应用侧关闭 pull)
+  #
+  # sync:
+  #   build:
+  #     context: ../..
+  #     dockerfile: deploy/docker/Dockerfile
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   command: ["repo", "sync", "--watch", "10"]
+  #   volumes:
+  #     - pinery-repos:/data/repos
+  #     - ./pinery.yaml:/data/pinery.yaml:ro
+  #     # - ~/.ssh/pinery_deploy_key:/root/.ssh/id_ed25519:ro
+
+volumes:
+  pinery-data:
+  # pinery-repos:

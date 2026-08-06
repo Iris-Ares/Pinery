@@ -1,0 +1,79 @@
+# Pinery 加固部署(自建 egress 白名单 + 容器安全参数)
+#
+# 与 compose.yaml 的区别:pinery 容器挂在 internal 网络(无法直接出网),
+# 唯一出口是 egress 代理,按域名白名单放行——「数据出不去,注入的价值就塌了」
+# (PRD §5/§8-Q9;选型依据见 docs/sandbox-evaluation.md §4)。
+#
+# 用法:
+#   cp .env.example .env            # 填 secrets
+#   cp ../../examples/pinery.example.yaml pinery.yaml   # 改成你的仓库
+#   # 按需改下面 EGRESS_ALLOW(飞书 + 模型 API + git 远端 + 包 registry)
+#   docker compose -f compose.hardened.yaml up -d
+#
+# 自检:docker compose -f compose.hardened.yaml exec pinery sh -c \
+#         'curl -s -o /dev/null -w "%{http_code}\n" https://example.com'   # 应为 403/失败
+
+services:
+  egress:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    init: true
+    command: ["bun", "deploy/docker/egress-proxy.ts"]
+    environment:
+      # 白名单:精确域名,或 .suffix / *.suffix 含子域。按需增删。
+      EGRESS_ALLOW: >-
+        open.feishu.cn,.feishu.cn,open.larksuite.com,.larksuite.com,
+        openrouter.ai,api.anthropic.com,api.openai.com,api.deepseek.com,
+        generativelanguage.googleapis.com,gateway.ai.cloudflare.com,
+        github.com,.github.com,codeload.github.com,gitlab.com,.gitlab.com,
+        registry.npmjs.org,.npmjs.org,pypi.org,files.pythonhosted.org,
+        registry.npmmirror.com,mirrors.aliyun.com
+      EGRESS_PORTS: "443,80"
+      # EGRESS_LOG: all      # 需要审计放行流量时打开
+    networks:
+      - internal
+      - external
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    read_only: true
+    tmpfs: ["/tmp"]
+
+  pinery:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    init: true
+    depends_on: [egress]
+    env_file: .env
+    environment:
+      # 应用与子进程(git/npm/agent 的 bash)全部走代理;直连目标在网络层不可达
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1
+      # git over SSH 在 internal 网络不可达:私仓请用 HTTPS + token(经代理)
+      GIT_TERMINAL_PROMPT: "0"
+    volumes:
+      - pinery-data:/data
+      - ./pinery.yaml:/data/pinery.yaml:ro
+    networks:
+      - internal          # 注意:不接 external,出网只能经 egress
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 512       # L1 跑测试时防 fork 炸弹
+    mem_limit: 4g
+    # L1 写能力开启后的加固:整体只读 + 仅工作区可写
+    # read_only: true
+    # tmpfs: ["/tmp:exec"]           # 构建工具需要可执行临时目录
+
+networks:
+  internal:
+    internal: true        # 关键:此网络无外部路由
+  external:
+
+volumes:
+  pinery-data:

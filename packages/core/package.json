@@ -1,0 +1,25 @@
+{
+  "name": "@pinery/core",
+  "version": "0.1.0",
+  "description": "Pinery shared core: AgentRunner narrow interface, config schema, bash policy engine, secret filter",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  }
+}

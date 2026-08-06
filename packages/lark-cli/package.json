@@ -1,0 +1,28 @@
+{
+  "name": "@pinery/lark-cli",
+  "version": "0.1.0",
+  "description": "Agent-side CLI for reading Lark/Feishu docs and files (read-only; replies never go through this)",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "lark-cli": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.72.0",
+    "commander": "^15.0.0"
+  }
+}

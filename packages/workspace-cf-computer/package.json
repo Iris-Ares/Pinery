@@ -1,0 +1,29 @@
+{
+  "name": "@pinery/workspace-cf-computer",
+  "version": "0.1.0",
+  "description": "Cloudflare Computer workspace backend for Pinery (experimental; pairs with deploy/cloudflare Worker)",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "default": "./dist/protocol.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@pinery/core": "workspace:*",
+    "@pinery/runner-pi": "workspace:*"
+  }
+}

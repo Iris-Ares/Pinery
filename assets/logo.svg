@@ -1,0 +1,13 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#124232"/>
+      <stop offset="1" stop-color="#052e16"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
+  <polygon points="128,116 196,194 60,194" fill="#10b981" stroke="#10b981" stroke-width="14" stroke-linejoin="round"/>
+  <polygon points="128,78 184,148 72,148" fill="#34d399" stroke="#34d399" stroke-width="14" stroke-linejoin="round"/>
+  <polygon points="128,44 168,102 88,102" fill="#6ee7b7" stroke="#6ee7b7" stroke-width="14" stroke-linejoin="round"/>
+  <rect x="118" y="198" width="20" height="22" rx="5" fill="#8b5e34"/>
+</svg>

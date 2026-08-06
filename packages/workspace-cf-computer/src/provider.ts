@@ -127,7 +127,7 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
       return;
     }
     // pull 失败不应阻断提问:退化为「用现有快照回答」,由审计与日志暴露
-    await this.client.call(workspaceId, { op: "gitPull" }, { timeoutMs: 5 * 60_000 }).catch(() => undefined);
+    await this.client.call(workspaceId, { op: "gitPull", url: repo.url }, { timeoutMs: 5 * 60_000 }).catch(() => undefined);
     this.syncedAt.set(workspaceId, Date.now());
   }
 }

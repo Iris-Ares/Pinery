@@ -55,3 +55,9 @@ export {
   type ToolOperationsBundle,
   type WorkspaceProvider,
 } from "./workspace.js";
+
+export {
+  redactRepoUrl,
+  splitRepoCredentials,
+  type RepoCredentials,
+} from "./repo-credentials.js";

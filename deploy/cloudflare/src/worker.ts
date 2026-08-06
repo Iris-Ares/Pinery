@@ -12,11 +12,12 @@ import {
   PROTOCOL_VERSION,
   WORKSPACE_ROOT,
   normalizeWorkspacePath,
+  splitRepoCredentials,
   type WireErrorCode,
   type WireRequest,
 } from "@pinery/workspace-cf-computer/protocol";
 import { execDeadline, withDeadline } from "./exec-deadline.js";
-import { REPO_MARKER, redactRepoUrl, type RepoMarker } from "./repo-marker.js";
+import { REPO_MARKER, type RepoMarker } from "./repo-marker.js";
 import { InvalidPatternError, matchGlob, regexGrep, type GrepFilesystem } from "./search.js";
 
 /**
@@ -252,15 +253,20 @@ async function handleRpc(handle: WorkspaceHandle, workspaceId: string, req: Wire
       // 所以「检查 marker + clone」在这里是原子的;已是同一仓库就直接返回,
       // 避免第二次 clone 在第一次的调查读取过程中改写 WORKSPACE_ROOT。
       const existing = await readMarker(ws);
-      if (existing?.url === redactRepoUrl(req.url)) return {};
+      const { url, headers } = splitRepoCredentials(req.url);
+      if (existing?.url === url) return {};
+      // 凭据走 Authorization 头,**不进 URL**:isomorphic-git 会把 clone 用的
+      // 地址写进 WORKSPACE_ROOT/.git/config 的 remote origin,而那是 agent
+      // 读得到的文件(cat .git/config)。
       await ws.git.clone({
-        url: req.url,
+        url,
         dir: WORKSPACE_ROOT,
+        ...(headers ? { headers } : {}),
         ...(req.ref ? { ref: req.ref } : {}),
         ...(req.depth !== undefined ? { depth: req.depth } : {}),
       });
       // 只记脱敏地址:凭据留在请求里,不写入任何持久介质
-      await writeMarker(ws, { url: redactRepoUrl(req.url), ref: req.ref, syncedAt: Date.now() });
+      await writeMarker(ws, { url, ref: req.ref, syncedAt: Date.now() });
       return {};
     }
 
@@ -268,10 +274,14 @@ async function handleRpc(handle: WorkspaceHandle, workspaceId: string, req: Wire
       // 会话工作区的 VFS 是持久的:不刷新就会一直基于初次克隆回答
       const marker = await readMarker(ws);
       if (!marker) throw new WireError("not_found", "工作区尚未初始化,请先 gitClone");
+      // remote origin 存的是脱敏地址,私有仓库的 pull 因此拿不到凭据 ——
+      // 由请求方在每次调用时带上来源地址,这里同样只取认证头
+      const auth = req.url ? splitRepoCredentials(req.url) : undefined;
       try {
         await ws.git.pull({
           dir: WORKSPACE_ROOT,
           ...(req.ref ?? marker.ref ? { ref: (req.ref ?? marker.ref) as string } : {}),
+          ...(auth?.headers ? { headers: auth.headers } : {}),
           singleBranch: true,
           fastForwardOnly: true, // 只读工作区不产生合并提交
         });

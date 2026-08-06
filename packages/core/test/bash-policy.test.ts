@@ -297,6 +297,29 @@ describe("L0 只读策略(allowlist)", () => {
     allow("git blame src/a.ts", 0);
   });
 
+  // 回归(PR review 六轮 P1):realpath 围栏只校验命令行上的参数,
+  // 递归遍历若跟随目录内的 symlink 就能走到工作区外(leak -> /data)
+  it("denies recursion modes that follow descendant symlinks", () => {
+    deny("grep -R secret .", 0);
+    deny("grep --dereference-recursive x .", 0);
+    deny("rg --follow x .", 0);
+    deny("rg -L x .", 0);
+    deny("find -L . -name x", 0);
+    deny("fd --follow x", 0);
+    deny("file -L link", 0);
+    deny("stat -L link", 0);
+
+    // 不跟随 symlink 的递归照常可用
+    allow("grep -r secret .", 0);
+    allow("grep -rn timeout src", 0);
+    allow("rg -n foo src", 0);
+    allow("find . -name '*.ts'", 0);
+    allow("fd -e ts", 0);
+    // 同名不同义的 -L 不受牵连:wc -L 是最大行长,tree -L 是层级
+    allow("wc -L a.txt", 0);
+    allow("tree -L 2", 0);
+  });
+
   it("does not mistake search patterns for paths", () => {
     const WS = "/data/repos/order";
     const a = (cmd: string) =>

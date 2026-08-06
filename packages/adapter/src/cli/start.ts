@@ -3,6 +3,7 @@ import { Orchestrator } from "../orchestrator.js";
 import { ensureCheckout, startPullLoop } from "../repo-sync.js";
 import { createRunner } from "../runner-factory.js";
 import { createWorkspaceProvider } from "../workspace/factory.js";
+import type { LocalWorkspaceProvider } from "../workspace/local.js";
 import { LarkService } from "../lark/service.js";
 import { Storage } from "../storage.js";
 import { VERSION } from "../version.js";
@@ -25,7 +26,13 @@ export async function runStart(opts: { config: string }): Promise<void> {
   // 全部经 operations 委托到云端工作区,本地克隆既用不上,又会让只有工作区
   // 端点访问权限的 adapter 在启动时失败。
   const usesLocalCheckout = workspaces.kind === "local";
-  const pullLoop = usesLocalCheckout ? startPullLoop(cfg, log) : { stop: () => {} };
+  // pull 经 provider 的空窗门控执行:它会原地改写共享 checkout,
+  // 与调查并发会让同一次调查读到分属不同 commit 的文件
+  const pullLoop = usesLocalCheckout
+    ? startPullLoop(cfg, log, (repoName, fn) =>
+        (workspaces as LocalWorkspaceProvider).withIdleCheckout(repoName, fn),
+      )
+    : { stop: () => {} };
   if (usesLocalCheckout) {
     for (const repo of cfg.repos) {
       log(`[repo] 准备 ${repo.name} …`);

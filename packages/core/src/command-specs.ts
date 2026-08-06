@@ -34,7 +34,12 @@ export interface CommandSpec {
   numeric?: boolean;
 }
 
-const READ_FLAGS = ["-L", "-H", "-P"]; // symlink 处理类,读方向无害
+/**
+ * symlink 处理类。**不含 -L / -H**:它们让遍历跟随符号链接,而路径围栏只校验
+ * 命令行上的参数本身——仓库里一个 `leak -> /data` 就能让 `grep -R x .` 读到
+ * 工作区外。-P(不跟随)是 git 与多数工具的默认,保留它只为显式书写。
+ */
+const READ_FLAGS = ["-P"];
 
 export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   ls: {
@@ -92,8 +97,8 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   },
   grep: {
     // grep -o = --only-matching(安全)
-    flags: ["-n", "-i", "-r", "-R", "-l", "-L", "-v", "-w", "-x", "-c", "-h", "-H", "-o", "-q", "-s", "-a", "-I", "-F", "-E", "-G", "-P", "-z", "-b", "-U",
-      "--line-number", "--ignore-case", "--recursive", "--dereference-recursive", "--files-with-matches", "--files-without-match",
+    flags: ["-n", "-i", "-r", "-l", "-v", "-w", "-x", "-c", "-h", "-H", "-o", "-q", "-s", "-a", "-I", "-F", "-E", "-G", "-P", "-z", "-b", "-U",
+      "--line-number", "--ignore-case", "--recursive", "--files-with-matches", "--files-without-match",
       "--invert-match", "--word-regexp", "--line-regexp", "--count", "--only-matching", "--fixed-strings", "--extended-regexp",
       "--basic-regexp", "--perl-regexp", "--no-filename", "--with-filename", "--no-messages", "--byte-offset", "--null"],
     valueFlags: ["-m", "-A", "-B", "-C", "-e", "-D", "-d", "--max-count", "--after-context", "--before-context", "--context",
@@ -104,11 +109,11 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   rg: {
     // 不声明 --pre / --pre-glob(执行外部程序)、--files / --files-with-matches 之外的模式切换,
     // 以及 --hostname-bin;它们会改变位置参数语义或直接执行命令
-    flags: ["-n", "-N", "-i", "-l", "-v", "-w", "-x", "-c", "-h", "-H", "-o", "-q", "-a", "-F", "-p", "-S", "-s", "-U", "-z", "-u", "-uu", "-L", "-.", "-0",
+    flags: ["-n", "-N", "-i", "-l", "-v", "-w", "-x", "-c", "-h", "-H", "-o", "-q", "-a", "-F", "-p", "-S", "-s", "-U", "-z", "-u", "-uu", "-.", "-0",
       "--line-number", "--no-line-number", "--ignore-case", "--smart-case", "--case-sensitive", "--files-with-matches", "--files-without-match",
       "--invert-match", "--word-regexp", "--line-regexp", "--count", "--count-matches", "--only-matching", "--fixed-strings", "--multiline",
       "--hidden", "--no-ignore", "--no-ignore-vcs", "--heading", "--no-heading", "--vimgrep", "--stats", "--trim", "--null", "--text",
-      "--follow", "--json", "--no-messages", "--pretty", "--column", "--byte-offset", "--with-filename", "--no-filename", "--crlf"],
+      "--json", "--no-messages", "--pretty", "--column", "--byte-offset", "--with-filename", "--no-filename", "--crlf"],
     valueFlags: ["-m", "-A", "-B", "-C", "-e", "-t", "-T", "-g", "-M", "-j",
       "--max-count", "--after-context", "--before-context", "--context", "--regexp", "--type", "--type-not", "--type-add",
       "--glob", "--iglob", "--max-depth", "--maxdepth", "--max-filesize", "--max-columns",
@@ -125,8 +130,8 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
     positional: "paths",
   },
   fd: {
-    flags: ["-H", "-I", "-a", "-l", "-p", "-u", "-s", "-i", "-0", "-L", "--hidden", "--no-ignore", "--absolute-path", "--full-path",
-      "--case-sensitive", "--ignore-case", "--follow", "--print0", "--list-details"],
+    flags: ["-H", "-I", "-a", "-l", "-p", "-u", "-s", "-i", "-0", "--hidden", "--no-ignore", "--absolute-path", "--full-path",
+      "--case-sensitive", "--ignore-case", "--print0", "--list-details"],
     valueFlags: ["-t", "-e", "-d", "-E", "-S", "--type", "--extension", "--max-depth", "--exclude", "--size", "--changed-within", "--changed-before"],
     positional: "pattern-then-paths",
   },
@@ -135,8 +140,8 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
     valueFlags: ["-L", "-I", "-P", "--filelimit"],
     positional: "paths",
   },
-  file: { flags: ["-b", "-i", "-L", "--brief", "--mime", "--mime-type"], positional: "paths" },
-  stat: { flags: ["-L", "-t", "--terse", "--dereference"], valueFlags: ["-c", "-f", "--format", "--printf"], positional: "paths" },
+  file: { flags: ["-b", "-i", "--brief", "--mime", "--mime-type"], positional: "paths" },
+  stat: { flags: ["-t", "--terse"], valueFlags: ["-c", "-f", "--format", "--printf"], positional: "paths" },
   du: {
     flags: ["-h", "-s", "-a", "-c", "-k", "-m", "-b", "-x", "--human-readable", "--summarize", "--all", "--total"],
     valueFlags: ["-d", "--max-depth", "--exclude", "--block-size"],
@@ -181,7 +186,9 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   basename: { flags: ["-a", "-z", "--multiple", "--zero"], valueFlags: ["-s", "--suffix"], positional: "paths" },
   dirname: { flags: ["-z", "--zero"], positional: "paths" },
   realpath: { flags: ["-e", "-m", "-q", "-s", "-z", "--canonicalize-existing", "--canonicalize-missing", "--quiet", "--no-symlinks"], positional: "paths" },
-  readlink: { flags: ["-f", "-e", "-m", "-n", "-q", "-s", "-z", "--canonicalize", "--no-newline"], positional: "paths" },
+  // readlink 只打印链接目标本身(不读取内容),但 -f/-e/-m 会解析整条链;
+  // L0 无须它,交给 realpath 的围栏路径
+  readlink: { flags: ["-n", "-q", "-z", "--no-newline"], positional: "paths" },
   pwd: { flags: ["-L", "-P"], positional: "opaque" },
   echo: { flags: ["-n", "-e", "-E"], positional: "opaque" },
   printf: { flags: [], positional: "opaque" },

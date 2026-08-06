@@ -4,6 +4,27 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Pinery — Your engineering teammate in Lark. 飞书里的工程同事。",
+  "license": "MIT",
+  "author": "Pinery contributors",
+  "homepage": "https://github.com/Iris-Ares/Pinery#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Iris-Ares/Pinery.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Iris-Ares/Pinery/issues"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "ai-agent",
+    "coding-agent",
+    "chatops",
+    "self-hosted",
+    "llm",
+    "bun",
+    "typescript"
+  ],
   "workspaces": [
     "packages/*",
     "deploy/cloudflare"

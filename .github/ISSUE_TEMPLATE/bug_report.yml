@@ -1,0 +1,53 @@
+name: 🐛 Bug 反馈 · Bug report
+description: 报告一个问题 / Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈!**安全漏洞请勿在此提交**,请走[私密报告](https://github.com/Iris-Ares/Pinery/security/advisories/new)(见 SECURITY.md)。
+  - type: textarea
+    id: what
+    attributes:
+      label: 问题描述 · What happened
+      description: 发生了什么?期望的行为是什么?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 · Steps to reproduce
+      placeholder: |
+        1. 配置 …
+        2. 执行 …
+        3. 观察到 …
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式 · Deployment
+      options:
+        - "Docker(compose.yaml)"
+        - "Docker 加固编排(compose.hardened.yaml)"
+        - "本地 Bun"
+        - "本地 Node"
+        - "其他(请在描述中说明)"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 环境信息 · Environment
+      placeholder: "如:bun 1.2.x / macOS 15 / Pinery commit 542c2b7"
+  - type: input
+    id: model
+    attributes:
+      label: 模型 provider(如与问题相关)
+      placeholder: "如:openrouter · deepseek/deepseek-chat"
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志 · Logs
+      description: 粘贴前请脱敏 —— 不要包含 app secret、API key、内部 URL。
+      render: shell

@@ -203,6 +203,28 @@ describe("L0 只读策略(allowlist)", () => {
     a("git log --oneline -20");
   });
 
+  // 自查发现:选项可以紧贴路径值,绕过「以 - 开头即跳过」的判断
+  it("checks paths attached to option flags", () => {
+    const WS = "/data/repos/order";
+    const d = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("deny");
+    const a = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("allow");
+
+    d("jq -f/etc/passwd ."); // 短选项紧贴
+    d("cat -v/etc/passwd");
+    d("cat -f~/.ssh/id_rsa");
+    d("jq --from-file=/etc/passwd ."); // = 分隔
+    d("jq --rawfile x /etc/passwd ."); // 分离形态
+
+    // 普通标志不受影响
+    a("ls -la");
+    a("rg -n -i refund src");
+    a("tail -n 20 log.txt");
+    a("cut -d, -f1 a.csv");
+    a("find . -maxdepth 2");
+  });
+
   it("does not mistake search patterns for paths", () => {
     const WS = "/data/repos/order";
     const a = (cmd: string) =>

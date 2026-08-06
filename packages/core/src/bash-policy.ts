@@ -383,11 +383,15 @@ const NO_PATH_ARG_COMMANDS = new Set(["echo", "printf", "seq", "expr", "date", "
  */
 export function argEscapesWorkspace(arg: string, workspaceDir: string): boolean {
   if (!arg) return false;
-  // 选项:检查 --opt=<value> 的值部分,其余跳过
+  // 选项:值可能以三种形态携带路径,都要检查
+  //   --opt=<path>   分隔符 =
+  //   -f<path>       短选项紧贴值(jq -f/etc/passwd)
+  //   --opt <path>   分离形态由调用方按下一个 token 处理
   if (arg.startsWith("-")) {
     const eq = arg.indexOf("=");
-    if (eq < 0) return false;
-    return argEscapesWorkspace(arg.slice(eq + 1), workspaceDir);
+    if (eq >= 0) return argEscapesWorkspace(arg.slice(eq + 1), workspaceDir);
+    const attached = arg.match(/^-{1,2}[A-Za-z]*([/~].*)$/);
+    return attached ? argEscapesWorkspace(attached[1] as string, workspaceDir) : false;
   }
   // ~ 会被 shell 展开到 HOME,一律拒绝
   if (arg === "~" || arg.startsWith("~/")) return true;

@@ -1,0 +1,27 @@
+{
+  "name": "pinery-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pinery — Your engineering teammate in Lark. 飞书里的工程同事。",
+  "workspaces": [
+    "packages/*",
+    "deploy/cloudflare"
+  ],
+  "engines": {
+    "bun": ">=1.2.0",
+    "node": ">=22.13"
+  },
+  "packageManager": "bun@1.3.12",
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean && rm -rf packages/*/dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,85 @@
+# Pinery 配置示例(完整注释版)
+# 用 pinery init 交互生成,或复制本文件为 pinery.yaml 修改。
+# ${VAR} 会在加载时从环境变量插值(缺失即报错,pinery doctor 可检查)。
+
+lark:
+  app_id: cli_xxxxxxxxxxxx          # 飞书开发者后台「凭证与基础信息」
+  app_secret: ${LARK_APP_SECRET}    # 不要把明文写进配置
+  endpoint: feishu                  # feishu(国内)| lark(海外 Lark Suite)
+
+repos:
+  - name: order-service             # 标识名(字母数字与 ._-)
+    url: git@github.com:org/order.git   # 建议只读 deploy key 的 ssh 地址
+    # path: /srv/repos/order        # 可选:已有本地 checkout 时指定;缺省自动 clone 到 <workspace.root>/repos/<name>
+    chats:                          # L0 授权群(答案可见范围 = 群,PRD §3.5)
+      - oc_xxxxxxxxxxxxxxxx
+    permissions:                    # user × level 显式授权(open_id)
+      - { user: ou_alice, level: 2 }   # L2 交付:可确认创建 PR(M3)
+      - { user: ou_bob,   level: 1 }   # L1 编写:可派发编码任务(M2)
+    p2p_open: true                  # 允许任何能私聊到 bot 的人 L0 提问(可见性由飞书后台控制)
+
+# ── 模型接入:三种形态,任选其一 ─────────────────────────────────────────
+# pi-ai 内置 26 个 provider 适配:anthropic / openai / google / deepseek /
+# openrouter / groq / xai / mistral / cerebras / zai / minimax /
+# cloudflare-workers-ai / vercel-ai-gateway / azure-openai-responses …
+# API key 一律走环境变量,按 provider 惯例命名(ANTHROPIC_API_KEY 等),
+# api_key_env 可覆写。
+
+# 形态 A:官方 / 聚合 provider 直连(零额外配置)
+model:
+  provider: openrouter              # 换成 anthropic / openai / google / deepseek 即直连官方
+  id: deepseek/deepseek-chat        # PM 高频问答的成本生死线:默认 DeepSeek(PRD §2.3)
+  # api_key_env: OPENROUTER_API_KEY # 缺省按 provider 惯例
+  # thinking: low                   # off|minimal|low|medium|high(自动钳制到模型能力)
+
+# 形态 B:Cloudflare AI Gateway 改道(统一观测/缓存/限流;内置 provider 只需 base_url)
+# model:
+#   provider: anthropic
+#   id: claude-sonnet-4-5
+#   base_url: https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/anthropic
+#   headers:                        # 网关开了鉴权才需要;值先按 env 变量名解析再退回字面量,
+#     cf-aig-authorization: CF_AIG_HEADER   # 推荐写 env 名(变量内容如 "Bearer xxx"),secret 不落盘
+#
+# BYOK 统一端点(/compat,上游密钥托管在 CF,本地只持网关 token):
+# model:
+#   provider: cf-gateway            # 自定义名
+#   id: anthropic/claude-sonnet-4-5 # provider/model 形式
+#   api: openai-completions
+#   base_url: https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/compat
+#   api_key_env: CF_AIG_TOKEN
+
+# 形态 C:自定义 OpenAI 兼容网关 / 本地模型(Ollama、vLLM、内网网关)
+# model:
+#   provider: my-gateway            # 自定义名(需要 base_url + api)
+#   id: qwen3-coder
+#   api: openai-completions         # openai-completions|anthropic-messages|openai-responses|google-generative-ai
+#   base_url: http://127.0.0.1:11434/v1
+#   api_key_env: MY_GATEWAY_API_KEY # 本地模型无鉴权时,env 不存在也能跑
+
+limits:
+  session_max_turns: 20             # 单会话轮数预算,超限 fresh + 注入摘要(PRD §3.4)
+  task_timeout_min: 30              # 单任务超时强杀
+  session_idle_archive_min: 240     # 话题空闲封存窗口
+  max_concurrent_tasks: 2           # 全局并发(同一话题永远串行)
+  answer_max_chars: 3500            # 卡片体积上限(超出截断)
+  rate_per_user_per_min: 6          # 每用户限流
+
+workspace:
+  root: ~/.pinery                   # 数据根目录;Docker 部署用 /data
+  pull_interval_min: 10             # 共享 checkout 拉取间隔;0 = 关闭(交给 sidecar)
+  provider: local                   # local(默认:共享 checkout + git worktree)
+  # ── 云路径(实验):Cloudflare Computer 工作区 ───────────────────────────
+  # 先部署 deploy/cloudflare 的 Worker,再改这里;详见该目录 README。
+  # 注意:CF 路径只支持 HTTPS 仓库地址(isomorphic-git 无 SSH 传输)。
+  # provider: "@pinery/workspace-cf-computer"
+  # options:
+  #   endpoint: https://pinery-computer.<子域>.workers.dev
+  #   token: ${PINERY_CF_TOKEN}     # 与 wrangler secret put PINERY_TOKEN 同值
+  #   exec_backend: worker-shell    # worker-shell(免容器,L0)| container(L1 需真 Linux)
+  #   clone_depth: "1"              # 浅克隆应对 Computer 的体积约束
+
+# storage:
+#   path: ~/.pinery/pinery.db       # SQLite 路径,缺省 <workspace.root>/pinery.db
+
+runner:
+  kind: pi                          # AgentRunner 实现:pi(默认)| 自定义模块名(需导出 createRunner)

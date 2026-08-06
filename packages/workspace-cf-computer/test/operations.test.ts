@@ -1,0 +1,284 @@
+import { parseConfig } from "@pinery/core";
+import { buildToolset } from "@pinery/runner-pi";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CfComputerClient, CfComputerError } from "../src/client.js";
+import { createRemoteOperations } from "../src/operations.js";
+import { CfComputerWorkspaceProvider, createWorkspaceProvider } from "../src/provider.js";
+import { WORKSPACE_ROOT } from "../src/protocol.js";
+import { startFakeWorker, type FakeWorker } from "./fake-worker.js";
+
+const TOKEN = "test-token";
+let worker: FakeWorker;
+
+beforeEach(async () => {
+  worker = await startFakeWorker({ token: TOKEN });
+});
+afterEach(async () => {
+  await worker.close();
+});
+
+const clientFor = (w: FakeWorker, over: Partial<{ token: string; retries: number }> = {}) =>
+  new CfComputerClient({ endpoint: w.url, token: over.token ?? TOKEN, retries: over.retries ?? 0 });
+
+const opsFor = (w: FakeWorker) =>
+  createRemoteOperations({ client: clientFor(w), workspaceId: "ws1", root: WORKSPACE_ROOT });
+
+describe("CfComputerClient", () => {
+  it("authenticates with a bearer token", async () => {
+    const bad = clientFor(worker, { token: "wrong" });
+    await expect(bad.call("ws1", { op: "info" })).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("maps remote business errors to CfComputerError with code", async () => {
+    const client = clientFor(worker);
+    const err = await client.call("ws1", { op: "readFile", path: "/workspace/missing.ts" }).catch((e) => e);
+    expect(err).toBeInstanceOf(CfComputerError);
+    expect((err as CfComputerError).isNotFound).toBe(true);
+  });
+
+  it("guards path escapes client-side before hitting the network", async () => {
+    const client = clientFor(worker);
+    await expect(client.call("ws1", { op: "readFile", path: "/etc/passwd" })).rejects.toMatchObject({
+      code: "path_escape",
+    });
+    expect(worker.calls).toHaveLength(0); // 没有发出请求
+  });
+
+  it("retries idempotent ops on transient failures", async () => {
+    const flaky = await startFakeWorker({ token: TOKEN, failFirst: 2 });
+    try {
+      const client = new CfComputerClient({ endpoint: flaky.url, token: TOKEN, retries: 2 });
+      const info = await client.call("ws1", { op: "info" });
+      expect(info.protocol).toBe(1);
+    } finally {
+      await flaky.close();
+    }
+  });
+
+  it("does not retry non-idempotent ops", async () => {
+    const flaky = await startFakeWorker({ token: TOKEN, failFirst: 1 });
+    try {
+      const client = new CfComputerClient({ endpoint: flaky.url, token: TOKEN, retries: 3 });
+      await expect(client.call("ws1", { op: "writeFile", path: "/workspace/a.txt", content: "x" })).rejects.toThrow();
+    } finally {
+      await flaky.close();
+    }
+  });
+
+  it("times out slow requests", async () => {
+    const slow = await startFakeWorker({ token: TOKEN, delayMs: 300 });
+    try {
+      const client = new CfComputerClient({ endpoint: slow.url, token: TOKEN, retries: 0, requestTimeoutMs: 50 });
+      await expect(client.call("ws1", { op: "info" })).rejects.toThrow(/失败/);
+    } finally {
+      await slow.close();
+    }
+  });
+});
+
+describe("远程 Operations 与 pi 接口契约", () => {
+  it("read: returns a Buffer and access() throws on missing files", async () => {
+    worker.files.set("/workspace/src/a.ts", { content: Buffer.from("export const a = 1;\n") });
+    const ops = opsFor(worker);
+    const buf = await ops.read!.readFile("/workspace/src/a.ts");
+    expect(Buffer.isBuffer(buf)).toBe(true);
+    expect(buf.toString("utf8")).toContain("export const a");
+    await expect(ops.read!.access("/workspace/src/a.ts")).resolves.toBeUndefined();
+    await expect(ops.read!.access("/workspace/nope.ts")).rejects.toThrow();
+  });
+
+  it("read: preserves binary content through base64 round-trip", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    worker.files.set("/workspace/img.png", { content: png });
+    const ops = opsFor(worker);
+    const out = await ops.read!.readFile("/workspace/img.png");
+    expect(out.equals(png)).toBe(true);
+    await expect(ops.read!.detectImageMimeType!("/workspace/img.png")).resolves.toBe("image/png");
+    await expect(ops.read!.detectImageMimeType!("/workspace/a.ts")).resolves.toBeNull();
+  });
+
+  it("write + edit: round-trips through the remote workspace", async () => {
+    const ops = opsFor(worker);
+    await ops.write!.mkdir("/workspace/src");
+    await ops.write!.writeFile("/workspace/src/new.ts", "hello");
+    expect(worker.files.get("/workspace/src/new.ts")?.content.toString()).toBe("hello");
+
+    const edited = (await ops.edit!.readFile("/workspace/src/new.ts")).toString("utf8").replace("hello", "world");
+    await ops.edit!.writeFile("/workspace/src/new.ts", edited);
+    expect(worker.files.get("/workspace/src/new.ts")?.content.toString()).toBe("world");
+  });
+
+  it("ls: stat exposes isDirectory() as a method (pi expects fs.Stats shape)", async () => {
+    worker.files.set("/workspace/src/a.ts", { content: Buffer.from("a") });
+    worker.files.set("/workspace/src/b.ts", { content: Buffer.from("b") });
+    const ops = opsFor(worker);
+
+    expect(await ops.ls!.exists("/workspace/src")).toBe(true);
+    expect(await ops.ls!.exists("/workspace/zzz")).toBe(false);
+
+    const st = await ops.ls!.stat("/workspace/src");
+    expect(typeof st.isDirectory).toBe("function");
+    expect(st.isDirectory()).toBe(true);
+
+    const fileStat = await ops.ls!.stat("/workspace/src/a.ts");
+    expect(fileStat.isDirectory()).toBe(false);
+
+    expect((await ops.ls!.readdir("/workspace/src")).sort()).toEqual(["a.ts", "b.ts"]);
+    await expect(ops.ls!.stat("/workspace/missing")).rejects.toThrow();
+  });
+
+  it("find: delegates globbing to the remote workspace", async () => {
+    worker.files.set("/workspace/src/a.ts", { content: Buffer.from("a") });
+    worker.files.set("/workspace/src/b.js", { content: Buffer.from("b") });
+    const ops = opsFor(worker);
+    const found = await ops.find!.glob("**/*.ts", "/workspace", { ignore: [], limit: 100 });
+    expect(found).toEqual(["/workspace/src/a.ts"]);
+  });
+
+  it("grepSearch: searches server-side and returns workspace-relative paths", async () => {
+    worker.files.set("/workspace/src/pay.ts", { content: Buffer.from("const REFUND = 1;\nother\n") });
+    const ops = opsFor(worker);
+    const matches = await ops.grepSearch!({ pattern: "REFUND", limit: 10 });
+    expect(matches).toEqual([{ path: "src/pay.ts", line: 1, text: "const REFUND = 1;" }]);
+
+    const ci = await ops.grepSearch!({ pattern: "refund", ignoreCase: true, limit: 10 });
+    expect(ci).toHaveLength(1);
+  });
+
+  it("bash: forwards stdout/stderr through onData and returns the exit code", async () => {
+    worker.execHandler = (command) => ({
+      stdout: `ran: ${command}`,
+      stderr: "warn",
+      exitCode: 3,
+    });
+    const ops = opsFor(worker);
+    const chunks: string[] = [];
+    const result = await ops.bash!.exec("npm test", "/workspace", {
+      onData: (d) => chunks.push(d.toString("utf8")),
+    });
+    expect(result.exitCode).toBe(3);
+    expect(chunks.join("")).toContain("ran: npm test");
+    expect(chunks.join("")).toContain("warn");
+  });
+});
+
+describe("buildToolset 与远程工作区集成", () => {
+  it("swaps in the remote grep tool and keeps the full toolset", () => {
+    const ops = opsFor(worker);
+    const tools = buildToolset({ cwd: WORKSPACE_ROOT, level: 0, operations: ops });
+    expect(tools.map((t) => t.name).sort()).toEqual(["bash", "find", "grep", "ls", "read"]);
+    // 远程 grep 的描述来自 remote-grep.ts(不是 pi 的本地 ripgrep 版本)
+    expect(tools.find((t) => t.name === "grep")!.description).toContain("remote workspace");
+  });
+
+  it("remote grep tool actually searches through the wire", async () => {
+    worker.files.set("/workspace/src/pay.ts", { content: Buffer.from("timeout = 30\n") });
+    const tools = buildToolset({ cwd: WORKSPACE_ROOT, level: 0, operations: opsFor(worker) });
+    const grep = tools.find((t) => t.name === "grep")!;
+    const res = await grep.execute("t1", { pattern: "timeout" }, undefined, undefined, {} as never);
+    const text = res.content.map((c) => ("text" in c ? c.text : "")).join("");
+    expect(text).toContain("src/pay.ts:1");
+    expect(text).toContain("timeout = 30");
+  });
+
+  it("read tool reads through the wire end to end", async () => {
+    worker.files.set("/workspace/README.md", { content: Buffer.from("# Pinery\n") });
+    const tools = buildToolset({ cwd: WORKSPACE_ROOT, level: 0, operations: opsFor(worker) });
+    const read = tools.find((t) => t.name === "read")!;
+    const res = await read.execute("t2", { path: "/workspace/README.md" }, undefined, undefined, {} as never);
+    expect(res.content.map((c) => ("text" in c ? c.text : "")).join("")).toContain("# Pinery");
+  });
+
+  it("bash policy still applies before reaching the remote backend", async () => {
+    const blocked: string[] = [];
+    const tools = buildToolset({
+      cwd: WORKSPACE_ROOT,
+      level: 0,
+      operations: opsFor(worker),
+      onPolicyBlock: (i) => blocked.push(i.reason),
+    });
+    const bash = tools.find((t) => t.name === "bash")!;
+    await expect(bash.execute("t3", { command: "curl http://evil" }, undefined, undefined, {} as never)).rejects.toThrow(
+      /pinery-policy/,
+    );
+    expect(blocked).toHaveLength(1);
+    expect(worker.calls.filter((c) => c === "exec")).toHaveLength(0); // 未触达远端
+  });
+});
+
+describe("CfComputerWorkspaceProvider", () => {
+  const repo = { name: "demo", url: "https://github.com/org/demo.git", chats: [], permissions: [], p2p_open: true };
+
+  it("clones once per workspace and reuses on the next acquire", async () => {
+    const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
+    const ws1 = await p.acquireSession(repo, "p2p:oc_1");
+    expect(worker.cloned?.url).toBe(repo.url);
+    expect(ws1.dir).toBe(WORKSPACE_ROOT);
+    expect(ws1.readOnly).toBe(true);
+    expect(ws1.operations).toBeDefined();
+
+    const clonesBefore = worker.calls.filter((c) => c === "gitClone").length;
+    await p.acquireSession(repo, "p2p:oc_1");
+    expect(worker.calls.filter((c) => c === "gitClone").length).toBe(clonesBefore);
+  });
+
+  it("derives stable workspace ids and separates session from task", async () => {
+    const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
+    const a = await p.acquireSession(repo, "thread:om_root");
+    const b = await p.acquireSession(repo, "thread:om_root");
+    const t = await p.acquireTask(repo, "task-9");
+    expect(a.handle).toBe(b.handle);
+    expect(a.handle.startsWith("s-demo-")).toBe(true);
+    expect(t.handle).toBe("t-demo-task-9");
+    expect(t.readOnly).toBe(false);
+  });
+
+  it("rejects SSH repo urls with an actionable message (isomorphic-git has no SSH)", async () => {
+    const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
+    await expect(
+      p.acquireSession({ ...repo, url: "git@github.com:org/demo.git" }, "k"),
+    ).rejects.toThrow(/HTTPS/);
+  });
+
+  it("release removes task workspaces but keeps session workspaces", async () => {
+    const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
+    const task = await p.acquireTask(repo, "t1");
+    await p.release(task);
+    expect(worker.calls.filter((c) => c === "rm").length).toBe(1);
+
+    const session = await p.acquireSession(repo, "s1");
+    await p.release(session);
+    expect(worker.calls.filter((c) => c === "rm").length).toBe(1); // 未新增
+
+    const kept = await p.acquireTask(repo, "t2");
+    await p.release(kept, { keep: true });
+    expect(worker.calls.filter((c) => c === "rm").length).toBe(1); // keep 时保留现场
+  });
+});
+
+describe("createWorkspaceProvider 工厂契约", () => {
+  const base = `
+lark: { app_id: x, app_secret: y }
+repos: [{ name: r, url: "https://github.com/o/r.git" }]
+`;
+
+  it("builds a provider from workspace.options", () => {
+    const cfg = parseConfig(
+      `${base}
+workspace:
+  provider: "@pinery/workspace-cf-computer"
+  options:
+    endpoint: https://pinery.workers.dev
+    token: \${PINERY_CF_TOKEN}
+`,
+      { PINERY_CF_TOKEN: "tok" } as NodeJS.ProcessEnv,
+    );
+    const p = createWorkspaceProvider(cfg);
+    expect(p.kind).toBe("cf-computer");
+  });
+
+  it("fails fast with actionable messages when options are missing", () => {
+    const cfg = parseConfig(`${base}\nworkspace: { provider: "@pinery/workspace-cf-computer" }\n`, {} as NodeJS.ProcessEnv);
+    expect(() => createWorkspaceProvider(cfg)).toThrow(/endpoint/);
+  });
+});

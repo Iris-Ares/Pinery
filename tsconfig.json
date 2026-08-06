@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/skills" },
+    { "path": "packages/runner-pi" },
+    { "path": "packages/workspace-cf-computer" },
+    { "path": "packages/lark-cli" },
+    { "path": "packages/adapter" }
+  ]
+}

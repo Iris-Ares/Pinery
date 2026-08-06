@@ -1,0 +1,388 @@
+import { randomUUID } from "node:crypto";
+import {
+  filterSecrets,
+  parseLayeredAnswer,
+  repoCheckoutDir,
+  runnerModelConfig,
+  type LayeredAnswer,
+  type PineryConfig,
+  type ProvidedWorkspace,
+  type RepoConfig,
+  type AgentRunner,
+  type WorkspaceProvider,
+} from "@pinery/core";
+import { RateLimiter, gate } from "./gateway.js";
+import {
+  answerCard,
+  deniedCard,
+  errorCard,
+  helpCard,
+  progressCard,
+  statusCard,
+  timeoutCard,
+  toolLine,
+  type Card,
+} from "./lark/cards.js";
+import type { IncomingMessage } from "./lark/events.js";
+import { headInfo } from "./repo-sync.js";
+import { buildSessionSummary, planSession, sessionKeyFor } from "./sessions.js";
+import type { Storage } from "./storage.js";
+
+/** 出站通道抽象(测试可注入 fake;生产实现为 LarkService) */
+export interface LarkMessenger {
+  sendCard(chatId: string, card: Card): Promise<string | undefined>;
+  replyCard(messageId: string, card: Card, inThread: boolean): Promise<string | undefined>;
+  patchCard(messageId: string, card: Card): Promise<void>;
+}
+
+export interface OrchestratorDeps {
+  cfg: PineryConfig;
+  storage: Storage;
+  runner: AgentRunner;
+  lark: LarkMessenger;
+  /** 工作区后端(缺省 local);云沙箱后端按 WorkspaceProvider 接口替换 */
+  workspaces?: WorkspaceProvider;
+  log?: (line: string) => void;
+}
+
+const CANCEL_RE = /^(取消|cancel|stop)[??!!。.]?$/i;
+/** 进度卡片最小 patch 间隔 */
+const PATCH_INTERVAL_MS = 1500;
+
+/**
+ * 编排器(PRD §3.1 会话路由 + 输出层):
+ * - 同 session_key 串行,全局并发受 limits.max_concurrent_tasks 约束
+ * - ack 卡片 → 进度流 patch → 分层答案卡片,一张卡走完整个生命周期
+ * - 所有出站文本过 secret 过滤;每次工具调用落审计;每问必存 qa_log(golden set 地基)
+ */
+export class Orchestrator {
+  private readonly queues = new Map<string, Promise<void>>();
+  private readonly running = new Map<string, AbortController>();
+  private readonly limiter: RateLimiter;
+  private queued = 0;
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(private readonly deps: OrchestratorDeps) {
+    this.limiter = new RateLimiter(deps.cfg.limits.rate_per_user_per_min);
+  }
+
+  get queueLength(): number {
+    return this.queued;
+  }
+
+  /** 事件入口(长连接 handler 直接调用;内部自行排队,立即返回) */
+  handle(msg: IncomingMessage): void {
+    const { cfg, storage } = this.deps;
+    const sessionKey = sessionKeyFor(msg);
+    const row = storage.getSession(sessionKey);
+    // 活跃会话 = 存储里未过期的 active 行,或该 key 上有排队/进行中的任务
+    //(首问尚未答完时的话题内追问也要延续,不能因 session 行未落库而被忽略)
+    const hasActiveSession =
+      this.queues.has(sessionKey) ||
+      (!!row && row.state === "active" && Date.now() - row.updated_at <= cfg.limits.session_idle_archive_min * 60_000);
+
+    // 取消命令:直接中断该会话正在跑的任务
+    if (CANCEL_RE.test(msg.text.trim()) && this.running.has(sessionKey)) {
+      this.running.get(sessionKey)!.abort();
+      return;
+    }
+
+    const decision = gate(msg, { cfg, limiter: this.limiter, hasActiveSession });
+    const inThread = msg.chatType === "group";
+
+    switch (decision.action) {
+      case "ignore":
+        return;
+      case "denied":
+        void this.safeReply(msg, deniedCard(decision.reply), inThread);
+        return;
+      case "rate_limited":
+        void this.safeReply(msg, deniedCard(decision.reply), inThread);
+        return;
+      case "help":
+        void this.safeReply(msg, helpCard({ repo: decision.repo?.name, levelName: decision.levelName }), inThread);
+        return;
+      case "status":
+        void this.replyStatus(msg, decision.repo, inThread);
+        return;
+      case "investigate":
+        this.enqueue(sessionKey, () => this.runInvestigation(msg, decision.repo, decision.question));
+        return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+
+  private enqueue(sessionKey: string, fn: () => Promise<void>): void {
+    this.queued++;
+    const prev = this.queues.get(sessionKey) ?? Promise.resolve();
+    const next = prev
+      .then(async () => {
+        await this.acquireSlot();
+        try {
+          await fn();
+        } finally {
+          this.releaseSlot();
+        }
+      })
+      .catch((e: unknown) => this.log(`[orchestrator] 任务异常:${e instanceof Error ? e.stack : String(e)}`))
+      .finally(() => {
+        this.queued--;
+        if (this.queues.get(sessionKey) === next) this.queues.delete(sessionKey);
+      });
+    this.queues.set(sessionKey, next);
+  }
+
+  private async acquireSlot(): Promise<void> {
+    if (this.active < this.deps.cfg.limits.max_concurrent_tasks) {
+      this.active++;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    this.active++;
+  }
+
+  private releaseSlot(): void {
+    this.active--;
+    this.waiters.shift()?.();
+  }
+
+  // -------------------------------------------------------------------------
+
+  private async runInvestigation(msg: IncomingMessage, repo: RepoConfig, question: string): Promise<void> {
+    const { cfg, storage, runner, lark } = this.deps;
+    const sessionKey = sessionKeyFor(msg);
+    const taskId = randomUUID();
+    const startedAt = Date.now();
+    const inThread = msg.chatType === "group";
+
+    const ackId = await this.safeReply(msg, progressCard({ lines: [], elapsedSec: 0 }), inThread);
+    if (!ackId) {
+      this.log(`[orchestrator] ack 卡片发送失败,放弃任务 ${taskId}`);
+      return;
+    }
+
+    const plan = planSession(storage, cfg, msg);
+    const abort = new AbortController();
+    this.running.set(sessionKey, abort);
+
+    storage.audit({
+      sessionKey,
+      taskId,
+      userId: msg.senderOpenId,
+      repo: repo.name,
+      kind: "task_start",
+      detail: question.slice(0, 500),
+    });
+
+    // 进度流:事件驱动 + 节流 patch
+    const lines: string[] = [];
+    let turns = 0;
+    let lastPatch = 0;
+    let patchTimer: NodeJS.Timeout | undefined;
+    const pushProgress = (line?: string) => {
+      if (line) lines.push(line);
+      const now = Date.now();
+      const flush = () => {
+        lastPatch = Date.now();
+        patchTimer = undefined;
+        void lark
+          .patchCard(ackId, progressCard({ lines, elapsedSec: Math.round((Date.now() - startedAt) / 1000), turns }))
+          .catch(() => {});
+      };
+      if (now - lastPatch >= PATCH_INTERVAL_MS) flush();
+      else if (!patchTimer) patchTimer = setTimeout(flush, PATCH_INTERVAL_MS - (now - lastPatch));
+    };
+
+    const model = runnerModelConfig(cfg);
+
+    // 工作区经 provider 取得:本地实现返回共享 checkout,云沙箱后端返回远程工作区
+    // + operations 委托(docs/sandbox-evaluation.md §4.2)
+    const workspace: ProvidedWorkspace = this.deps.workspaces
+      ? await this.deps.workspaces.acquireSession(repo, sessionKey)
+      : { handle: `session:${sessionKey}`, repo: repo.name, dir: repoCheckoutDir(cfg, repo), readOnly: true };
+    const checkoutDir = workspace.dir;
+    let result;
+    try {
+      result = await runner.run(
+        {
+          id: taskId,
+          kind: "investigate",
+          prompt: question,
+          context: plan.context,
+          resume: plan.resume,
+        },
+        workspace,
+        {
+          // M1:一切按 L0 只读运行;L1+ 编码任务在 M2 开启
+          level: 0,
+          maxTurns: cfg.limits.session_max_turns,
+          timeoutMs: cfg.limits.task_timeout_min * 60_000,
+          signal: abort.signal,
+          model,
+          onEvent: (e) => {
+            switch (e.type) {
+              case "turn":
+                turns = e.n;
+                pushProgress();
+                break;
+              case "tool_start": {
+                const detail = filterSecrets(e.detail).text;
+                storage.audit({ sessionKey, taskId, repo: repo.name, kind: "tool_start", tool: e.tool, detail });
+                pushProgress(toolLine(e.tool, detail));
+                break;
+              }
+              case "tool_end":
+                storage.audit({ sessionKey, taskId, repo: repo.name, kind: "tool_end", tool: e.tool, detail: e.ok ? "ok" : "error" });
+                break;
+              case "policy_block":
+                storage.audit({ sessionKey, taskId, repo: repo.name, kind: "policy_block", tool: e.tool, detail: e.reason });
+                pushProgress(toolLine("policy", `已拦截:${filterSecrets(e.reason).text}`));
+                break;
+              default:
+                break;
+            }
+          },
+        },
+      );
+    } finally {
+      if (patchTimer) clearTimeout(patchTimer);
+      this.running.delete(sessionKey);
+      // 会话工作区常驻(本地实现为 no-op);远程后端在此归还连接/容器
+      await this.deps.workspaces?.release(workspace).catch(() => {});
+    }
+
+    const durationMs = Date.now() - startedAt;
+
+    if (!result.ok && !result.answer) {
+      const card =
+        result.aborted === "timeout"
+          ? timeoutCard(cfg.limits.task_timeout_min)
+          : result.aborted === "user"
+            ? errorCard("已按你的要求取消本次调查。")
+            : errorCard(
+                `调查未能完成:${filterSecrets(result.error ?? "未知错误").text}`,
+                "可以稍后重试;若持续失败请让管理员运行 pinery doctor 检查配置。",
+              );
+      await lark.patchCard(ackId, card).catch(() => {});
+      storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: result.error ?? result.aborted });
+      return;
+    }
+
+    // 分层解析 + 出站过滤 + 截断
+    const layered = this.sanitizeAnswer(parseLayeredAnswer(result.answer));
+    const head = await headInfo(checkoutDir);
+    const truncated = this.truncateAnswer(layered, cfg.limits.answer_max_chars);
+
+    await lark
+      .patchCard(
+        ackId,
+        answerCard(question, layered, {
+          repo: repo.name,
+          headShort: head?.short,
+          durationMs,
+          turns: result.turns,
+          model: cfg.model.id,
+          costUsd: result.usage?.costUsd,
+          redacted: layered.redacted,
+          truncated,
+        }),
+      )
+      .catch((e: unknown) => this.log(`[orchestrator] 答案卡片更新失败:${String(e)}`));
+
+    storage.audit({
+      sessionKey,
+      taskId,
+      repo: repo.name,
+      kind: "task_end",
+      detail: `ok=${result.ok} turns=${result.turns} tools=${result.toolCalls} files=${result.filesTouched.length}${result.aborted ? ` aborted=${result.aborted}` : ""}`,
+    });
+
+    // 每问必存(golden set 从 M1 第一天积累,PRD §6)
+    storage.logQa({
+      taskId,
+      sessionKey,
+      repo: repo.name,
+      userId: msg.senderOpenId,
+      chatId: msg.chatId,
+      question,
+      answer: filterSecrets(result.answer).text,
+      confidence: layered.confidenceLevel,
+      durationMs,
+      turns: result.turns,
+      costUsd: result.usage?.costUsd,
+    });
+
+    // 会话记忆:summary 同过 secret 过滤(PRD §3.4 硬保护)
+    storage.upsertSession({
+      sessionKey,
+      chatId: msg.chatId,
+      chatType: msg.chatType,
+      repo: repo.name,
+      runnerRef: result.sessionRef,
+      summary: filterSecrets(buildSessionSummary(question, layered.conclusion)).text,
+      turns: plan.priorTurns + result.turns,
+    });
+  }
+
+  private sanitizeAnswer(a: LayeredAnswer): LayeredAnswer & { redacted: boolean } {
+    const c = filterSecrets(a.conclusion);
+    const e = a.evidence !== undefined ? filterSecrets(a.evidence) : undefined;
+    const f = a.confidence !== undefined ? filterSecrets(a.confidence) : undefined;
+    return {
+      conclusion: c.text,
+      evidence: e?.text,
+      confidence: f?.text,
+      confidenceLevel: a.confidenceLevel,
+      redacted: c.redacted || !!e?.redacted || !!f?.redacted,
+    };
+  }
+
+  /** 卡片体积控制:结论与依据分别按比例截断 */
+  private truncateAnswer(a: LayeredAnswer, maxChars: number): boolean {
+    let truncated = false;
+    const cap = (s: string, n: number) => {
+      if (s.length <= n) return s;
+      truncated = true;
+      return `${s.slice(0, n - 1)}…`;
+    };
+    a.conclusion = cap(a.conclusion, Math.floor(maxChars * 0.5));
+    if (a.evidence) a.evidence = cap(a.evidence, Math.floor(maxChars * 0.4));
+    if (a.confidence) a.confidence = cap(a.confidence, Math.floor(maxChars * 0.1));
+    return truncated;
+  }
+
+  private async replyStatus(msg: IncomingMessage, repo: RepoConfig, inThread: boolean): Promise<void> {
+    const { cfg, storage } = this.deps;
+    const dir = repoCheckoutDir(cfg, repo);
+    const head = await headInfo(dir);
+    const row = storage.getSession(sessionKeyFor(msg));
+    await this.safeReply(
+      msg,
+      statusCard({
+        repo: repo.name,
+        headShort: head?.short,
+        headTime: head?.time,
+        model: `${cfg.model.provider}/${cfg.model.id}`,
+        sessionTurns: row?.turns,
+        sessionState: row?.state,
+        queueLength: this.queued,
+      }),
+      inThread,
+    );
+  }
+
+  private async safeReply(msg: IncomingMessage, card: Card, inThread: boolean): Promise<string | undefined> {
+    try {
+      return await this.deps.lark.replyCard(msg.messageId, card, inThread);
+    } catch (e) {
+      this.log(`[orchestrator] 回复失败:${e instanceof Error ? e.message : String(e)}`);
+      return undefined;
+    }
+  }
+
+  private log(line: string): void {
+    this.deps.log?.(line);
+  }
+}

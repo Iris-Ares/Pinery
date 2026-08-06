@@ -181,7 +181,11 @@ export class PiRunner implements AgentRunner {
         void session.abort();
       }
     };
-    opts.signal?.addEventListener("abort", onExternalAbort, { once: true });
+    // 取消可能发生在到达这里之前(工作区准备或 runner setup 期间)。
+    // 对已 aborted 的 signal 注册监听器不会触发,调查会照常跑完并返回
+    // 「成功」答案——所以先检查当前状态,再挂监听。
+    if (opts.signal?.aborted) onExternalAbort();
+    else opts.signal?.addEventListener("abort", onExternalAbort, { once: true });
 
     let promptError: string | undefined;
     try {

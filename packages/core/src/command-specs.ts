@@ -40,7 +40,7 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   ls: {
     flags: ["-l", "-a", "-A", "-h", "-R", "-t", "-r", "-S", "-1", "-d", "-F", "-i", "-p", "-u", "-c", "-n", "-G", ...READ_FLAGS,
       "--all", "--almost-all", "--human-readable", "--reverse", "--recursive", "--classify", "--directory", "--inode"],
-    valueFlags: ["--sort", "--time", "--color", "--format"],
+    valueFlags: ["--sort", "--time", "--format"],
     positional: "paths",
   },
   cat: {
@@ -97,7 +97,7 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
       "--invert-match", "--word-regexp", "--line-regexp", "--count", "--only-matching", "--fixed-strings", "--extended-regexp",
       "--basic-regexp", "--perl-regexp", "--no-filename", "--with-filename", "--no-messages", "--byte-offset", "--null"],
     valueFlags: ["-m", "-A", "-B", "-C", "-e", "-D", "-d", "--max-count", "--after-context", "--before-context", "--context",
-      "--regexp", "--color", "--colour", "--binary-files", "--include", "--exclude", "--exclude-dir", "--devices", "--directories", "--label"],
+      "--regexp", "--binary-files", "--include", "--exclude", "--exclude-dir", "--devices", "--directories", "--label"],
     pathFlags: ["-f", "--file"], // pattern 文件
     positional: "pattern-then-paths",
   },
@@ -111,7 +111,7 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
       "--follow", "--json", "--no-messages", "--pretty", "--column", "--byte-offset", "--with-filename", "--no-filename", "--crlf"],
     valueFlags: ["-m", "-A", "-B", "-C", "-e", "-t", "-T", "-g", "-M", "-j",
       "--max-count", "--after-context", "--before-context", "--context", "--regexp", "--type", "--type-not", "--type-add",
-      "--glob", "--iglob", "--max-depth", "--maxdepth", "--max-filesize", "--max-columns", "--color", "--colors",
+      "--glob", "--iglob", "--max-depth", "--maxdepth", "--max-filesize", "--max-columns",
       "--sort", "--sortr", "--encoding", "--engine", "--threads", "--context-separator", "--field-match-separator"],
     pathFlags: ["-f", "--file", "--ignore-file"],
     positional: "pattern-then-paths",
@@ -127,7 +127,7 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   fd: {
     flags: ["-H", "-I", "-a", "-l", "-p", "-u", "-s", "-i", "-0", "-L", "--hidden", "--no-ignore", "--absolute-path", "--full-path",
       "--case-sensitive", "--ignore-case", "--follow", "--print0", "--list-details"],
-    valueFlags: ["-t", "-e", "-d", "-E", "-S", "--type", "--extension", "--max-depth", "--exclude", "--size", "--changed-within", "--changed-before", "--color"],
+    valueFlags: ["-t", "-e", "-d", "-E", "-S", "--type", "--extension", "--max-depth", "--exclude", "--size", "--changed-within", "--changed-before"],
     positional: "pattern-then-paths",
   },
   tree: {
@@ -185,7 +185,7 @@ export const L0_COMMAND_SPECS: Record<string, CommandSpec> = {
   pwd: { flags: ["-L", "-P"], positional: "opaque" },
   echo: { flags: ["-n", "-e", "-E"], positional: "opaque" },
   printf: { flags: [], positional: "opaque" },
-  date: { flags: ["-u", "-R", "-I", "--utc"], valueFlags: ["-d", "--date", "-f", "+%s"], positional: "opaque" },
+  date: { flags: ["-u", "-R", "-I", "--utc"], valueFlags: ["-d", "--date"], positional: "opaque" },
   seq: { flags: ["-w", "-s"], valueFlags: ["-f", "--format", "--separator"], positional: "opaque" },
   expr: { flags: [], positional: "opaque" },
   test: { flags: [], positional: "opaque" },

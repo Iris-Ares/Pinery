@@ -16,6 +16,7 @@ import {
   type WireRequest,
 } from "@pinery/workspace-cf-computer/protocol";
 import { execDeadline, withDeadline } from "./exec-deadline.js";
+import { REPO_MARKER, redactRepoUrl, type RepoMarker } from "./repo-marker.js";
 import { InvalidPatternError, matchGlob, regexGrep, type GrepFilesystem } from "./search.js";
 
 /**
@@ -105,15 +106,6 @@ function guardPath(input: string | undefined): string {
   const normalized = normalizeWorkspacePath(input ?? WORKSPACE_ROOT);
   if (!normalized) throw new WireError("path_escape", `路径越出工作区:${input}`);
   return normalized;
-}
-
-const REPO_MARKER = `${WORKSPACE_ROOT}/.pinery-repo`;
-
-interface RepoMarker {
-  url: string;
-  ref?: string;
-  /** 上次 clone/pull 时间戳,provider 据此决定是否刷新 */
-  syncedAt?: number;
 }
 
 async function readMarker(ws: { fs: { readFile: (p: string, e: "utf8") => Promise<string> } }): Promise<RepoMarker | undefined> {
@@ -260,14 +252,15 @@ async function handleRpc(handle: WorkspaceHandle, workspaceId: string, req: Wire
       // 所以「检查 marker + clone」在这里是原子的;已是同一仓库就直接返回,
       // 避免第二次 clone 在第一次的调查读取过程中改写 WORKSPACE_ROOT。
       const existing = await readMarker(ws);
-      if (existing?.url === req.url) return {};
+      if (existing?.url === redactRepoUrl(req.url)) return {};
       await ws.git.clone({
         url: req.url,
         dir: WORKSPACE_ROOT,
         ...(req.ref ? { ref: req.ref } : {}),
         ...(req.depth !== undefined ? { depth: req.depth } : {}),
       });
-      await writeMarker(ws, { url: req.url, ref: req.ref, syncedAt: Date.now() });
+      // 只记脱敏地址:凭据留在请求里,不写入任何持久介质
+      await writeMarker(ws, { url: redactRepoUrl(req.url), ref: req.ref, syncedAt: Date.now() });
       return {};
     }
 

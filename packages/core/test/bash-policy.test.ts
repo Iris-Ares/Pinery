@@ -234,6 +234,37 @@ describe("L0 只读策略(allowlist)", () => {
     a("find . -maxdepth 2");
   });
 
+  // 回归(PR review 四轮):可选值选项 `--color[=WHEN]` 不带 = 时 CLI 不消耗
+  // 下一个参数,若按「带值标志」解析会吃掉 pattern,让真正的路径变成位置参数
+  it("does not let optional-value flags swallow the pattern", () => {
+    const WS = "/data/repos/order";
+    const d = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("deny");
+    const a = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("allow");
+
+    d("grep --color root /etc/passwd");
+    d("grep --colour root /etc/passwd");
+    d("ls --color /etc");
+    // 必需值的标志不受影响
+    a("grep -m 5 pattern src");
+    a("rg -A 3 pattern src");
+    a("ls -la");
+  });
+
+  // 回归:date -f DATEFILE 逐行读取该文件,非法行原样回显 = 直接泄漏内容
+  it("denies file-reading options on otherwise harmless commands", () => {
+    const WS = "/data/repos/order";
+    const d = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("deny");
+    d("date -f /etc/passwd");
+    d("date -f /data/pinery.db");
+    d("date --file=/etc/passwd");
+    // 正常时间用法保留
+    expect(evaluateBashCommand("date -u", 0, { workspaceDir: WS }).decision).toBe("allow");
+    expect(evaluateBashCommand("date +%Y-%m-%d", 0, { workspaceDir: WS }).decision).toBe("allow");
+  });
+
   it("does not mistake search patterns for paths", () => {
     const WS = "/data/repos/order";
     const a = (cmd: string) =>

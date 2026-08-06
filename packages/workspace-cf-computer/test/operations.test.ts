@@ -309,6 +309,28 @@ describe("CfComputerWorkspaceProvider", () => {
     }
   });
 
+  // 回归(PR review 五轮 P2):服务端只持久化脱敏地址,客户端若拿含凭据的
+  // URL 去比,私有仓库永远被判成「不同仓库」→ 走 clone 分支 → 服务端视为
+  // 幂等 no-op,于是每个刷新周期都记账却从不 fetch
+  it("pulls (not re-clones) an authenticated repo whose marker is redacted", async () => {
+    const authed = { ...repo, url: "https://ghp_tok@example.com/org/repo.git" };
+    const p = new CfComputerWorkspaceProvider({
+      endpoint: worker.url,
+      token: TOKEN,
+      retries: 0,
+      refreshIntervalMs: 0, // 强制每次取用都判定刷新
+    });
+
+    await p.acquireSession(authed, "s1");
+    expect(worker.calls.filter((c) => c === "gitClone")).toHaveLength(1);
+
+    worker.calls.length = 0;
+    await p.acquireSession(authed, "s1");
+    // 第二次必须走 pull,而不是又一次(被当成 no-op 的)clone
+    expect(worker.calls).toContain("gitPull");
+    expect(worker.calls).not.toContain("gitClone");
+  });
+
   it("degrades to the existing snapshot when the refresh pull fails", async () => {
     const flaky = await startFakeWorker({ token: TOKEN, failOps: ["gitPull"] });
     try {

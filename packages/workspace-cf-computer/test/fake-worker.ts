@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { ERROR_STATUS, type WireRequest, type WireErrorCode } from "../src/protocol.js";
+import { ERROR_STATUS, redactRepoUrl, type WireRequest, type WireErrorCode } from "../src/protocol.js";
 
 /**
  * 内存版假 Worker:实现同一套线协议,用真实 HTTP 跑端到端测试。
@@ -189,7 +189,10 @@ export async function startFakeWorker(options: FakeWorkerOptions): Promise<FakeW
           }
 
           case "gitClone": {
-            state.cloned = { url: body.url, ref: body.ref };
+            // 与真实 Worker 一致:只记脱敏地址(凭据不落盘),且对同一仓库幂等
+            const redacted = redactRepoUrl(body.url);
+            if (state.cloned?.url === redacted) return send(200, { ok: true, result: {} });
+            state.cloned = { url: redacted, ref: body.ref };
             state.syncedAt = Date.now();
             files.set(`${ROOT}/README.md`, { content: Buffer.from("# cloned\n") });
             return send(200, { ok: true, result: {} });

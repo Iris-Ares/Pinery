@@ -19,7 +19,6 @@ export interface RepoMarker {
   syncedAt?: number;
 }
 
-/** 去掉 URL 里的 user:password@,只留可比较的仓库标识 */
-export function redactRepoUrl(url: string): string {
-  return url.replace(/^(https?:\/\/)[^/@]*@/i, "$1");
-}
+// 脱敏实现放在协议包里:客户端比对与服务端持久化必须用同一个函数,
+// 两份定义一旦漂移,私有仓库就会永远被判成「不同仓库」。
+export { redactRepoUrl } from "@pinery/workspace-cf-computer/protocol";

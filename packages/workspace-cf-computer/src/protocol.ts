@@ -112,6 +112,18 @@ export const ERROR_STATUS: Record<WireErrorCode, number> = {
  * 工作区内路径归一化 + 围栏。返回归一化的绝对路径;越界返回 undefined。
  * 客户端与 Worker 双侧执行(纵深:客户端防误用,Worker 防恶意)。
  */
+/**
+ * 去掉 URL 里的 user:password@,只留可比较的仓库标识。
+ *
+ * 协议双方**都**要用它:服务端只持久化脱敏地址(凭据不能落进 agent 可读的
+ * 介质),客户端因此也必须拿脱敏后的地址去比对,否则含 token 的 repo.url
+ * 与服务端返回的地址永远不相等,私有仓库会一直被判成「不同仓库」而走克隆
+ * 分支——服务端又把它当幂等 no-op,结果是每个刷新周期都记账但从不 fetch。
+ */
+export function redactRepoUrl(url: string): string {
+  return url.replace(/^(https?:\/\/)[^/@]*@/i, "$1");
+}
+
 export function normalizeWorkspacePath(input: string, root = WORKSPACE_ROOT): string | undefined {
   if (!input) return undefined;
   const raw = input.startsWith("/") ? input : `${root}/${input}`;

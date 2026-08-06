@@ -61,8 +61,14 @@ export async function runBootstrap(opts: {
         },
       },
     );
-    if (!result.ok && !result.answer) {
+    // 失败状态优先于部分输出:超时/回合上限/流错误都可能已经吐出一段文本,
+    // 那段文本写进 .pinery/glossary.md 之后,后续 bootstrap 会因为文件已存在
+    // 而跳过生成——整个仓库的调查从此长期建立在一份截断的术语表上。
+    if (!result.ok) {
       console.error(`[bootstrap] 生成失败:${result.error ?? result.aborted ?? "未知错误"}`);
+      if (result.answer) {
+        console.error("已丢弃本次的部分输出(不完整的术语表会被后续运行当作既有成果跳过)。");
+      }
       console.error("可改用 --offline 先生成骨架。");
       return 1;
     }

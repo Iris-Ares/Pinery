@@ -258,12 +258,28 @@ interface ParsedSegment {
   args: string[];
 }
 
-/** 粗粒度 token 化(引号感知,不做展开) */
+/**
+ * 粗粒度 token 化(引号感知,不做变量展开)。
+ *
+ * 反斜杠转义会被**去掉**,产出的是 bash 实际传给命令的参数值。这一点是必须的:
+ * `cat \/data/pinery.db` 若保留反斜杠,参数看起来是相对路径(不以 / 开头),
+ * 能通过工作区围栏,而 bash 去掉转义后打开的是绝对路径 /data/pinery.db。
+ * 围栏判断的必须是「命令真正会收到的字符串」。
+ *
+ * 单引号内一切按字面处理(bash 语义);双引号内 \" \\ \$ \` 是转义,
+ * 其余反斜杠保留字面。
+ */
 export function tokenize(segment: string): string[] {
   const tokens: string[] = [];
   let current = "";
+  let started = false; // 区分「空字符串参数」与「无参数」:'' 应产出一个空 token
   let inSingle = false;
   let inDouble = false;
+  const push = () => {
+    if (started) tokens.push(current);
+    current = "";
+    started = false;
+  };
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i]!;
     if (inSingle) {
@@ -272,26 +288,49 @@ export function tokenize(segment: string): string[] {
       continue;
     }
     if (inDouble) {
+      if (ch === "\\") {
+        const next = segment[i + 1];
+        // 双引号内只有这几个字符可被转义,其余反斜杠是字面量
+        if (next === '"' || next === "\\" || next === "$" || next === "`") {
+          current += next;
+          i++;
+        } else {
+          current += ch;
+        }
+        continue;
+      }
       if (ch === '"') inDouble = false;
       else current += ch;
       continue;
     }
+    if (ch === "\\") {
+      // 引号外:反斜杠转义下一个字符本身(行尾续行除外)
+      const next = segment[i + 1];
+      if (next !== undefined && next !== "\n") {
+        current += next;
+        started = true;
+        i++;
+      }
+      continue;
+    }
     if (ch === "'") {
       inSingle = true;
+      started = true;
       continue;
     }
     if (ch === '"') {
       inDouble = true;
+      started = true;
       continue;
     }
     if (/\s/.test(ch)) {
-      if (current) tokens.push(current);
-      current = "";
+      push();
       continue;
     }
     current += ch;
+    started = true;
   }
-  if (current) tokens.push(current);
+  push();
   return tokens;
 }
 
@@ -347,11 +386,17 @@ const L0_ALTERNATIVES: Record<string, string> = {
 /** 需要递归判定其目标命令的包装命令 */
 const WRAPPERS = new Set(["xargs", "timeout", "nice", "command", "env", "nohup", "stdbuf", "time"]);
 
-/** L0 git 只读子命令 */
+/**
+ * L0 git 只读子命令。
+ *
+ * 不含 `help`:`git help -w/--web` 会启动浏览器、`-m/--man` 会启动 man
+ * 分页器,两者都在命令白名单之外起进程。子命令用法可以直接问模型,
+ * 没有理由为此保留一个能拉起外部查看器的入口。
+ */
 const L0_GIT_SUBCOMMANDS = new Set([
   "log", "show", "diff", "blame", "status", "shortlog", "describe",
   "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file", "grep",
-  "count-objects", "whatchanged", "reflog", "version", "help",
+  "count-objects", "whatchanged", "reflog", "version",
 ]);
 
 /**

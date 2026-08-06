@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateBashCommand, splitCommand } from "../src/bash-policy.js";
+import { evaluateBashCommand, splitCommand, tokenize } from "../src/bash-policy.js";
 
 const allow = (cmd: string, level: 0 | 1 | 2 | 3) =>
   expect(evaluateBashCommand(cmd, level).decision, `${cmd} @L${level}`).toBe("allow");
@@ -263,6 +263,38 @@ describe("L0 只读策略(allowlist)", () => {
     // 正常时间用法保留
     expect(evaluateBashCommand("date -u", 0, { workspaceDir: WS }).decision).toBe("allow");
     expect(evaluateBashCommand("date +%Y-%m-%d", 0, { workspaceDir: WS }).decision).toBe("allow");
+  });
+
+  // 回归(PR review 五轮 P1):bash 会去掉反斜杠转义再把参数交给命令,
+  // 围栏必须判断「命令真正收到的字符串」,否则 \/ 看起来是相对路径
+  it("normalizes shell escapes before fencing paths", () => {
+    const WS = "/data/repos/order";
+    const d = (cmd: string) =>
+      expect(evaluateBashCommand(cmd, 0, { workspaceDir: WS }).decision, cmd).toBe("deny");
+
+    d("cat \\/data/pinery.db");
+    d("cat \\/etc/passwd");
+    d("head \\/data/pinery.db");
+    d("cat /data\\/pinery.db");
+
+    // tokenize 产出的是实参值
+    expect(tokenize("cat \\/data/x")).toEqual(["cat", "/data/x"]);
+    expect(tokenize("rg 'a b' x.txt")).toEqual(["rg", "a b", "x.txt"]);
+    expect(tokenize('rg "foo\\$bar" src')).toEqual(["rg", "foo$bar", "src"]);
+    // 双引号内非特殊字符前的反斜杠是字面量
+    expect(tokenize('rg "a\\db" x')).toEqual(["rg", "a\\db", "x"]);
+  });
+
+  // 回归:git help -w 拉起浏览器、-m 拉起 man,都在命令白名单之外起进程
+  it("denies git help entirely at L0", () => {
+    deny("git help --web log", 0);
+    deny("git help --man log", 0);
+    deny("git help -w log", 0);
+    deny("git help log", 0);
+    // 其余只读子命令不受影响
+    allow("git log --oneline -20", 0);
+    allow("git show HEAD", 0);
+    allow("git blame src/a.ts", 0);
   });
 
   it("does not mistake search patterns for paths", () => {

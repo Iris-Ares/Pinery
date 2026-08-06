@@ -6,7 +6,7 @@ import type {
 } from "@pinery/core";
 import { CfComputerClient, type CfComputerClientOptions } from "./client.js";
 import { createRemoteOperations } from "./operations.js";
-import { WORKSPACE_ROOT } from "./protocol.js";
+import { WORKSPACE_ROOT, redactRepoUrl } from "./protocol.js";
 
 /**
  * Cloudflare Computer 工作区后端(S2 实验路径,docs/sandbox-evaluation.md §4.3)。
@@ -109,7 +109,8 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
     if (lastSync !== undefined && Date.now() - lastSync < refreshMs) return; // 冷却期内不重复同步
 
     const info = await this.client.call(workspaceId, { op: "info" });
-    if (info.repo?.url !== repo.url) {
+    // 服务端只存脱敏地址,这里必须同样脱敏后再比,否则含凭据的 URL 永不相等
+    if (info.repo?.url !== redactRepoUrl(repo.url)) {
       await this.client.call(
         workspaceId,
         { op: "gitClone", url: repo.url, depth: this.options.cloneDepth ?? 1 },

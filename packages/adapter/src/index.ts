@@ -30,6 +30,7 @@ export {
   type SessionPlan,
 } from "./sessions.js";
 export { Orchestrator, type LarkMessenger, type OrchestratorDeps } from "./orchestrator.js";
+export { runInvestigationPipeline, type InvestigationDeps } from "./investigation.js";
 export { ensureCheckout, headInfo, pullCheckout, startPullLoop } from "./repo-sync.js";
 export { createRunner } from "./runner-factory.js";
 export { createWorkspaceProvider } from "./workspace/factory.js";

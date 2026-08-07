@@ -11,7 +11,13 @@
   },
   "dependencies": {
     "@cloudflare/computer": "0.1.1",
-    "@pinery/workspace-cf-computer": "workspace:*"
+    "@pinery/adapter": "workspace:*",
+    "@pinery/core": "workspace:*",
+    "@pinery/lark-fetch": "workspace:*",
+    "@pinery/runner-pi": "workspace:*",
+    "@pinery/workspace-cf-computer": "workspace:*",
+    "@platformatic/vfs": "^0.4.0",
+    "agents": "^0.20.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260804.1",

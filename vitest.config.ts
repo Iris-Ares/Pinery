@@ -15,6 +15,9 @@ export default defineConfig({
   },
   test: {
     include: ["packages/*/test/**/*.test.ts", "deploy/**/*.test.ts"],
+    // deploy/cloudflare/test 跑在 workerd 里(@cloudflare/vitest-pool-workers,
+    // 该目录自带 vitest 配置),与本配置的 node 环境互不混跑
+    exclude: ["**/node_modules/**", "deploy/cloudflare/**"],
     environment: "node",
   },
 });

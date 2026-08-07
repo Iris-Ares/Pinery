@@ -4,7 +4,7 @@ import type {
   RepoConfig,
   WorkspaceProvider,
 } from "@pinery/core";
-import { CfComputerClient, type CfComputerClientOptions } from "./client.js";
+import { CfComputerClient, type CfComputerClientOptions, type WorkspaceRpc } from "./client.js";
 import { createRemoteOperations } from "./operations.js";
 import { WORKSPACE_ROOT, redactRepoUrl } from "./protocol.js";
 
@@ -18,7 +18,16 @@ import { WORKSPACE_ROOT, redactRepoUrl } from "./protocol.js";
  *
  * 首次取得工作区时按需 gitClone(浅克隆,应对 Computer 的 ~10GB/FUSE 约束)。
  */
-export interface CfComputerProviderOptions extends CfComputerClientOptions {
+export interface CfComputerProviderOptions extends Omit<CfComputerClientOptions, "endpoint" | "token"> {
+  /** Worker 端点(HTTP 传输时必填;注入 client 时忽略) */
+  endpoint?: string;
+  /** 共享密钥(HTTP 传输时必填;注入 client 时忽略) */
+  token?: string;
+  /**
+   * 工作区传输注入:CF 形态传 DirectWorkspaceClient(Worker 内直连 DO stub),
+   * 缺省按 endpoint/token 构造 HTTP CfComputerClient。
+   */
+  client?: WorkspaceRpc;
   /** exec 后端 id:worker-shell(免容器,快)| container(真 Linux) */
   execBackend?: string;
   /** clone 深度(0 = 完整克隆);默认 1 */
@@ -33,7 +42,7 @@ export interface CfComputerProviderOptions extends CfComputerClientOptions {
 
 export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   readonly kind = "cf-computer";
-  private readonly client: CfComputerClient;
+  private readonly client: WorkspaceRpc;
   /** workspaceId → 本进程内上次同步(clone/pull)时间戳 */
   private readonly syncedAt = new Map<string, number>();
   /**
@@ -44,7 +53,14 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   private readonly preparing = new Map<string, Promise<void>>();
 
   constructor(private readonly options: CfComputerProviderOptions) {
-    this.client = new CfComputerClient(options);
+    if (options.client) {
+      this.client = options.client;
+    } else {
+      if (!options.endpoint || !options.token) {
+        throw new Error("CfComputerWorkspaceProvider 需要 client 注入,或 endpoint + token(HTTP 传输)");
+      }
+      this.client = new CfComputerClient({ ...options, endpoint: options.endpoint, token: options.token });
+    }
   }
 
   acquireSession(repo: RepoConfig, sessionKey: string): Promise<ProvidedWorkspace> {

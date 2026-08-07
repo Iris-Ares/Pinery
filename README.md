@@ -45,6 +45,7 @@
 ## ✨ 核心特性
 
 - 🏠 **自托管,代码不出内网** — 单容器部署,飞书长连接接入,无需公网回调地址
+- ☁️ **或整机上云** — 同一套核心代码可全托管在 Cloudflare(Agents SDK + Computer + AI Gateway),免自有服务器
 - 🔌 **多模型自由切换** — pi-ai 26+ provider 开箱即用,支持网关改道与本地模型(vLLM / Ollama)
 - 🎚️ **能力分级授权** — L0 只读 → L3 危险操作逐级放权,user × repo × level 硬判鉴权
 - 🧩 **双窄接口可替换** — AgentRunner 与 WorkspaceProvider 皆是窄接口,pi 只是默认实现,harness 与工作区后端都欢迎社区替代
@@ -86,6 +87,24 @@ cd deploy/docker
 cp .env.example .env   # 填入 secrets;pinery.yaml 放同目录
 docker compose up -d
 ```
+
+### ☁️ Cloudflare 部署(云原生形态,免自有服务器)
+
+Pinery 可**整机跑在 Cloudflare 上**:飞书事件走 webhook 进 Worker,会话与
+agent loop 跑在 Agents SDK(Durable Objects + Fiber),工作区用
+`@cloudflare/computer`,模型经 AI Gateway 改道。与本地形态共用同一套核心代码,
+互为回滚路径。
+
+```bash
+cd deploy/cloudflare && bun install
+# pinery.yaml 放进 wrangler.jsonc 的 vars.PINERY_CONFIG,secrets 用 wrangler secret put
+bunx wrangler deploy
+```
+
+部署步骤见 [deploy/cloudflare/README.md](deploy/cloudflare/README.md),
+架构设计与决策记录见 [docs/cloudflare-architecture.md](docs/cloudflare-architecture.md)。
+适合海外 Lark、公开 demo、仓库在 GitHub/GitLab SaaS 的团队;
+国内内网仓库仍走上面的 Docker 主路径(长连接免公网回调)。
 
 > [!TIP]
 > 生产环境建议用**加固编排**([compose.hardened.yaml](deploy/docker/compose.hardened.yaml)):应用容器挂 `internal` 网络(无外部路由),出网只能经自建 egress 白名单代理,叠加 `cap_drop: ALL` / `no-new-privileges` / pids 与内存限额。
@@ -164,8 +183,8 @@ pinery/
 │   ├── lark-cli/              # agent 侧只读飞书文档 CLI(PRD 对照场景的地基)
 │   └── skills/                # 调查规范 · 答案模板 · glossary 模板 · 任务规范
 ├── deploy/
-│   ├── docker/                # 主部署路径(含 egress 加固编排)
-│   └── cloudflare/            # 云路径 Worker(DO + Computer 工作区)
+│   ├── docker/                # 本地主路径(长连接 + egress 加固编排)
+│   └── cloudflare/            # 云原生形态(webhook + Agents SDK + Computer 工作区)
 ├── docs/                      # 威胁模型 · 沙箱选型 · 飞书配置教程
 └── examples/                  # 注释完整的配置示例
 ```

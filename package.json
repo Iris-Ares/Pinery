@@ -35,7 +35,7 @@
   },
   "packageManager": "bun@1.3.12",
   "scripts": {
-    "build": "tsc -b",
+    "build": "node packages/skills/scripts/embed.mjs && tsc -b",
     "clean": "tsc -b --clean && rm -rf packages/*/dist",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -44,5 +44,8 @@
     "@types/node": "^24.2.0",
     "typescript": "^5.9.2",
     "vitest": "^4.1.10"
+  },
+  "patchedDependencies": {
+    "@mariozechner/pi-coding-agent@0.73.1": "patches/@mariozechner%2Fpi-coding-agent@0.73.1.patch"
   }
 }

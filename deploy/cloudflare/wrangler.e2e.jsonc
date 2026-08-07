@@ -1,0 +1,29 @@
+// 本地端到端专用配置:PINERY_CONFIG 指向宿主机上的 fake 飞书(8398)与
+// fake 模型端点(8399),仓库用小型公开 HTTPS 仓库。见 scripts/simulate-lark-event.ts。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pinery-e2e",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat", "experimental"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKSPACE", "class_name": "PineryWorkspace" },
+      { "name": "AGENT", "class_name": "PineryAgent" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PineryWorkspace"] },
+    { "tag": "v2", "new_sqlite_classes": ["PineryAgent"] }
+  ],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "limits": { "cpu_ms": 300000 },
+  "define": { "import.meta.url": "\"file:///pinery-worker.js\"" },
+  "alias": { "@opentelemetry/api": "./src/otel-stub.ts" },
+  "vars": {
+    "PINERY_TOKEN": "e2e-ws-token",
+    "LARK_APP_SECRET": "e2e-app-secret",
+    "LARK_ENCRYPT_KEY": "e2e-encrypt-key",
+    "PINERY_CONFIG": "lark:\n  app_id: cli_e2e\n  app_secret: ${LARK_APP_SECRET}\n  encrypt_key: ${LARK_ENCRYPT_KEY}\n  verification_token: e2e-verification-token\n  api_base: http://127.0.0.1:8398\nrepos:\n  - name: demo\n    url: https://github.com/octocat/Hello-World.git\n    chats: [oc_e2e]\nmodel:\n  provider: e2e-gw\n  id: e2e-model\n  api: openai-completions\n  base_url: http://127.0.0.1:8399/v1\nlimits:\n  task_timeout_min: 2\nworkspace:\n  provider: \"@pinery/workspace-cf-computer\"\n"
+  }
+}

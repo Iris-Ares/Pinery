@@ -1,4 +1,4 @@
-export { CfComputerClient, CfComputerError, type CfComputerClientOptions } from "./client.js";
+export { CfComputerClient, CfComputerError, type CfComputerClientOptions, type WorkspaceRpc } from "./client.js";
 export { createRemoteOperations, type RemoteOperationsOptions } from "./operations.js";
 export {
   CfComputerWorkspaceProvider,

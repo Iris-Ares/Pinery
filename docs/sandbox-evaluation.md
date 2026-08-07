@@ -231,6 +231,10 @@ sparse-checkout 白名单目录**(Computer 的 `clone({ paths })` 原生支持),
 | ~~S2~~ ✅ 已完成 | `@pinery/workspace-cf-computer`(线协议 + 客户端 + 远程 operations + provider)与 deploy/cloudflare Worker(DO + Computer 工作区);L0 全链路端到端测试通过 | — |
 | S3(M4) | L1 云路径:container 后端 + 出站白名单 + 凭证注入代理;20 题盲评在云路径复跑 | Sandbox SDK 出站控制实测 |
 
+> 整机 CF 形态(飞书 webhook + Agents SDK + Fiber + AI Gateway)的设计与实施见
+> [cloudflare-architecture.md](cloudflare-architecture.md) —— 其分期 C1 已交付
+> L0 云闭环,C3 承接本表 S3。本文保持为工作区层的选型决策记录。
+
 ### 4.5 对 PRD 的修订建议(§8-Q7 增补)
 
 > ⚡修订(2026-08-06):CF 路径维持「不服务国内内网核心用户」的判断,但其

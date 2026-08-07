@@ -8,3 +8,6 @@ data/
 coverage/
 *.log
 .DS_Store
+
+# wrangler local dev state
+.wrangler/

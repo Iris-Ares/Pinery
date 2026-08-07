@@ -1,0 +1,22 @@
+{
+  "name": "@pinery/lark-fetch",
+  "version": "0.1.0",
+  "description": "Feishu/Lark protocol over bare fetch + WebCrypto: webhook verification/decryption and IM REST client. Zero dependencies, runs on Node/Bun/workerd.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  }
+}

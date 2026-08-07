@@ -1,5 +1,5 @@
 import type { RemoteToolOperations } from "@pinery/runner-pi";
-import { CfComputerClient, CfComputerError } from "./client.js";
+import { CfComputerError, type WorkspaceRpc } from "./client.js";
 
 /**
  * pi 工具 Operations → Computer 远程调用的映射。
@@ -34,7 +34,7 @@ function toRelative(path: string, root: string): string {
 }
 
 export interface RemoteOperationsOptions {
-  client: CfComputerClient;
+  client: WorkspaceRpc;
   workspaceId: string;
   /** 工作区根(pi 侧 cwd 与远端根一致) */
   root: string;
@@ -46,7 +46,7 @@ export interface RemoteOperationsOptions {
 
 export function createRemoteOperations(options: RemoteOperationsOptions): RemoteToolOperations {
   const { client, workspaceId, root } = options;
-  const call: CfComputerClient["call"] = (id, req, o) => client.call(id, req, o);
+  const call: WorkspaceRpc["call"] = (id, req, o) => client.call(id, req, o);
 
   const readBuffer = async (absolutePath: string): Promise<Buffer> => {
     const res = await call(workspaceId, { op: "readFile", path: absolutePath, encoding: "base64" });

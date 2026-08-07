@@ -10,8 +10,21 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./workers": {
+      "types": "./dist/workers-runner.d.ts",
+      "default": "./dist/workers-runner.js"
+    },
+    "./toolset": {
+      "types": "./dist/toolset.d.ts",
+      "default": "./dist/toolset.js"
+    },
+    "./remote-grep": {
+      "types": "./dist/remote-grep.d.ts",
+      "default": "./dist/remote-grep.js"
     }
   },
+  "sideEffects": false,
   "files": [
     "dist"
   ],

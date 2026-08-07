@@ -84,6 +84,12 @@ const configSchema = z.object({
     app_id: z.string().min(1),
     app_secret: z.string().min(1),
     endpoint: z.enum(["feishu", "lark"]).default("feishu"),
+    /** OpenAPI 基地址覆盖(飞书私有化部署/本地端到端;缺省按 endpoint 推导) */
+    api_base: z.string().optional(),
+    /** webhook 形态(CF 部署)的事件解密密钥;长连接形态不需要 */
+    encrypt_key: z.string().optional(),
+    /** webhook 形态的 Verification Token(challenge/事件 token 弱校验,可选) */
+    verification_token: z.string().optional(),
   }),
   repos: z.array(repoSchema).min(1),
   model: modelSchema.prefault({}),

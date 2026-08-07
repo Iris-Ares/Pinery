@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { EMBEDDED_SKILL_FILES } from "./embedded.js";
 
 /**
  * Pinery prompt 资产(PRD §3.2:pi 哲学——skills 全为文件,Git 管理、可 review、可移植)。
@@ -35,17 +36,34 @@ export function skillPath(name: SkillName): string {
 
 /** 读取 skill 内容:优先 repoDir/.pinery/<file>,回退内置默认 */
 export function readSkill(name: SkillName, repoDir?: string): string {
+  const file = SKILL_FILES[name];
   if (repoDir) {
-    const local = join(repoDir, ".pinery", SKILL_FILES[name]);
-    if (existsSync(local)) return readFileSync(local, "utf8");
+    try {
+      const local = join(repoDir, ".pinery", file);
+      if (existsSync(local)) return readFileSync(local, "utf8");
+    } catch {
+      // 无盘运行时(workerd):仓库定制版不可达,落内置
+    }
   }
-  return readFileSync(skillPath(name), "utf8");
+  try {
+    return readFileSync(skillPath(name), "utf8");
+  } catch {
+    // 无盘运行时:包文件不可读,用构建期内联副本(scripts/embed.mjs)
+    const embedded = EMBEDDED_SKILL_FILES[file];
+    if (embedded !== undefined) return embedded;
+    throw new Error(`skill 不可读且无内联副本:${file}`);
+  }
 }
 
 /** 读取仓库术语表(仅 .pinery/glossary.md,无内置回退——没有就是没有) */
 export function readGlossary(repoDir: string): string | undefined {
-  const p = join(repoDir, ".pinery", "glossary.md");
-  return existsSync(p) ? readFileSync(p, "utf8") : undefined;
+  try {
+    const p = join(repoDir, ".pinery", "glossary.md");
+    return existsSync(p) ? readFileSync(p, "utf8") : undefined;
+  } catch {
+    // 无盘运行时:等同于「没有」
+    return undefined;
+  }
 }
 
 /**

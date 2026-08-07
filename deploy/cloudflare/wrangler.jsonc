@@ -3,19 +3,44 @@
   "name": "pinery-computer",
   "main": "src/worker.ts",
   "compatibility_date": "2026-08-01",
-  // nodejs_compat: @cloudflare/computer 需要;experimental: Worker Loader(worker-shell 后端)
+  // nodejs_compat: @cloudflare/computer 与 pi SDK 需要;experimental: Worker Loader(worker-shell 后端)
   "compatibility_flags": ["nodejs_compat", "experimental"],
 
   "durable_objects": {
-    "bindings": [{ "name": "WORKSPACE", "class_name": "PineryWorkspace" }]
+    "bindings": [
+      { "name": "WORKSPACE", "class_name": "PineryWorkspace" },
+      // CF 形态:每 session_key 一个 Agent 实例(会话状态 + agent loop)
+      { "name": "AGENT", "class_name": "PineryAgent" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PineryWorkspace"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PineryWorkspace"] },
+    { "tag": "v2", "new_sqlite_classes": ["PineryAgent"] }
+  ],
 
   // worker-shell 后端(免容器、毫秒级,适合 L0 只读调查)
   "worker_loaders": [{ "binding": "LOADER" }],
 
+  // pi loop 的 CPU 大头是 I/O await(LLM/工作区 RPC),配满上限只为长调查兜底
+  "limits": { "cpu_ms": 300000 },
+
+  // pi-coding-agent 顶层探测 import.meta.url,bundle 后为 undefined 会在启动时抛;
+  // define 成常量让探测代码安全走过(pi 的 mistral→otel 幽灵依赖见 alias)
+  "define": { "import.meta.url": "\"file:///pinery-worker.js\"" },
+  "alias": { "@opentelemetry/api": "./src/otel-stub.ts" },
+
   "observability": { "enabled": true }
 
+  // ── CF 形态部署清单 ──────────────────────────────────────────────
+  // vars(wrangler.jsonc 或 dashboard):
+  //   PINERY_CONFIG  = pinery.yaml 全文(YAML 字符串;secret 用 ${VAR} 引用)
+  // secrets(wrangler secret put ...):
+  //   LARK_APP_SECRET / LARK_ENCRYPT_KEY(+ 可选 LARK_VERIFICATION_TOKEN)
+  //   模型 key(按 provider:ANTHROPIC_API_KEY / OPENROUTER_API_KEY / CF_AIG_HEADER …)
+  //   PINERY_TOKEN(仅混合形态 /v1/ws 需要)
+  // 飞书后台:事件订阅 = 将事件发送至开发者服务器,
+  //   请求网址 https://<worker>.workers.dev/lark/events,订阅 im.message.receive_v1
+  //
   // L1+ 写任务需要真 Linux 时,增配 container 后端(见 README):
   // "containers": [{ "class_name": "PineryWorkspace", "image": "./Dockerfile", "instance_type": "standard-1" }]
 }

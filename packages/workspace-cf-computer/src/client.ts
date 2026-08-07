@@ -24,6 +24,20 @@ export class CfComputerError extends Error {
 /** 瞬时故障(5xx/429/网络层):幂等操作可重试,不暴露给调用方 */
 class TransientError extends Error {}
 
+/**
+ * 工作区传输的结构接口(operations/provider 只依赖这一形状):
+ * - 本地/混合形态:CfComputerClient(HTTP + Bearer,跨公网到 Worker);
+ * - CF 形态:DirectWorkspaceClient(Worker 内直连 WORKSPACE DO stub,
+ *   见 deploy/cloudflare/src/direct-client.ts)。
+ */
+export interface WorkspaceRpc {
+  call<Op extends WireOp>(
+    workspaceId: string,
+    request: Extract<WireRequest, { op: Op }>,
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<WireResultMap[Op]>;
+}
+
 export interface CfComputerClientOptions {
   /** Worker 端点,如 https://pinery-computer.acme.workers.dev */
   endpoint: string;
@@ -43,7 +57,7 @@ const IDEMPOTENT_OPS = new Set<WireOp>(["stat", "readFile", "readdir", "find", "
  * Worker RPC 客户端。职责刻意最小:鉴权、超时、重试、错误映射。
  * 语义映射(pi Operations ↔ 线协议)在 operations.ts。
  */
-export class CfComputerClient {
+export class CfComputerClient implements WorkspaceRpc {
   private readonly endpoint: string;
   private readonly token: string;
   private readonly requestTimeoutMs: number;
@@ -55,7 +69,8 @@ export class CfComputerClient {
     this.token = options.token;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
     this.retries = options.retries ?? 2;
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    // workerd 下全局 fetch 以属性形式调用会丢 this 绑定(Illegal invocation),显式绑回
+    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   async call<Op extends WireOp>(

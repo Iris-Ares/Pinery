@@ -13,8 +13,41 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./investigation": {
+      "types": "./dist/investigation.d.ts",
+      "default": "./dist/investigation.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway.d.ts",
+      "default": "./dist/gateway.js"
+    },
+    "./sessions": {
+      "types": "./dist/sessions.d.ts",
+      "default": "./dist/sessions.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "default": "./dist/storage.js"
+    },
+    "./sqlite-driver": {
+      "types": "./dist/sqlite-driver.d.ts",
+      "default": "./dist/sqlite-driver.js"
+    },
+    "./lark/cards": {
+      "types": "./dist/lark/cards.d.ts",
+      "default": "./dist/lark/cards.js"
+    },
+    "./lark/events": {
+      "types": "./dist/lark/events.d.ts",
+      "default": "./dist/lark/events.js"
+    },
+    "./lark/messenger": {
+      "types": "./dist/lark/messenger.d.ts",
+      "default": "./dist/lark/messenger.js"
     }
   },
+  "sideEffects": false,
   "files": [
     "dist"
   ],

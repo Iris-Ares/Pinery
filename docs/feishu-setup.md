@@ -30,12 +30,26 @@
 
 > 不开 `group_msg:readonly` 时功能仍完整,只是话题内每次追问都要 @ 机器人。
 
-## 4. 事件订阅(长连接)
+## 4. 事件订阅(按部署形态二选一)
 
-「事件与回调」→「事件配置」:
+「事件与回调」→「事件配置」,**订阅方式取决于 Pinery 跑在哪**:
 
-1. 订阅方式选择 **「使用长连接接收事件」**(不要选「将事件发送至开发者服务器」)
+### 4A. 本地 / Docker 形态 → 长连接
+
+1. 订阅方式选择 **「使用长连接接收事件」**(免公网回调地址、免内网穿透)
 2. 「添加事件」→ 搜索并添加:**接收消息 `im.message.receive_v1`**
+
+### 4B. Cloudflare 云形态 → webhook
+
+1. 先完成 Worker 部署(见 [deploy/cloudflare/README.md](../deploy/cloudflare/README.md)),
+   拿到 `https://<worker>.workers.dev`
+2. 「加密策略」→ 生成并启用 **Encrypt Key**(CF 形态必需:webhook 验签与
+   事件解密都依赖它),填进 Worker secret `LARK_ENCRYPT_KEY`;
+   Verification Token 可选(配了则 Pinery 会做二次校验)
+3. 订阅方式选择 **「将事件发送至开发者服务器」**,请求网址填
+   `https://<worker>.workers.dev/lark/events` —— 保存时飞书会发 challenge
+   验证,Worker 部署且 secrets 配好后即自动通过
+4. 「添加事件」→ **接收消息 `im.message.receive_v1`**
 
 ## 5. 发布应用
 

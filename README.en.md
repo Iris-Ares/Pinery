@@ -45,6 +45,7 @@ Once configured, mention @Pinery in a group chat:
 ## ✨ Features
 
 - 🏠 **Self-hosted, code never leaves your network** — single container, Feishu long-connection events, no public callback URL
+- ☁️ **Or fully cloud-native** — the same core runs entirely on Cloudflare (Agents SDK + Computer + AI Gateway), no server to operate
 - 🔌 **Switch models freely** — 26+ providers out of the box via pi-ai, with gateway rerouting and local models (vLLM / Ollama)
 - 🎚️ **Leveled autonomy** — from L0 read-only to L3 dangerous ops, enforced per user × repo × level
 - 🧩 **Two replaceable narrow interfaces** — AgentRunner and WorkspaceProvider are both narrow interfaces; pi is just the default implementation, and community alternatives for both are welcome
@@ -93,6 +94,18 @@ docker compose up -d
 > ```bash
 > docker compose -f compose.hardened.yaml up -d
 > ```
+
+### ☁️ Cloudflare (cloud-native, no server required)
+
+Pinery can also run **entirely on Cloudflare**: Feishu events arrive via webhook into a Worker, sessions and the agent loop run on the Agents SDK (Durable Objects + Fibers), workspaces use `@cloudflare/computer`, and models route through AI Gateway. Same core code as the local form — each is the other's rollback path.
+
+```bash
+cd deploy/cloudflare && bun install
+# put pinery.yaml into wrangler.jsonc vars.PINERY_CONFIG; secrets via wrangler secret put
+bunx wrangler deploy
+```
+
+See [deploy/cloudflare/README.md](deploy/cloudflare/README.md) for setup and [docs/cloudflare-architecture.md](docs/cloudflare-architecture.md) for the architecture and decision record. Best for overseas Lark tenants, public demos, and repos already on GitHub/GitLab SaaS; internal-network repos should stay on the Docker path above (long connection, no public callback).
 
 ## 🧠 Model Providers
 
@@ -165,7 +178,7 @@ pinery/
 │   └── skills/                # Investigation spec · answer template · glossary template · task spec
 ├── deploy/
 │   ├── docker/                # Primary deployment path (incl. hardened egress compose)
-│   └── cloudflare/            # Cloud-path Worker (DO + Computer workspace)
+│   └── cloudflare/            # Cloud-native form (webhook + Agents SDK + Computer workspace)
 ├── docs/                      # Threat model · sandbox evaluation · Feishu setup guide
 └── examples/                  # Fully annotated config examples
 ```

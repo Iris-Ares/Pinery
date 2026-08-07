@@ -51,10 +51,18 @@ export interface AuditEntry {
 export class Storage {
   private db: SqliteDriver;
 
-  constructor(dbPath: string) {
-    if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = openSqlite(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
+  /**
+   * @param source 文件路径(本地形态:bun:sqlite / node:sqlite,启用 WAL)
+   *   或已就绪的 SqliteDriver(CF 形态:DO SQLite 适配器,无 WAL 概念)
+   */
+  constructor(source: string | SqliteDriver) {
+    if (typeof source === "string") {
+      if (source !== ":memory:") mkdirSync(dirname(source), { recursive: true });
+      this.db = openSqlite(source);
+      this.db.exec("PRAGMA journal_mode = WAL");
+    } else {
+      this.db = source;
+    }
     this.migrate();
   }
 

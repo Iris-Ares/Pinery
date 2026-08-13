@@ -44,4 +44,24 @@ describe("buildSystemPrompt", () => {
     const p = buildSystemPrompt({ repoName: "order", level: 0, kind: "investigate", workspaceDir: dir });
     expect(p).toContain("自定义调查规范");
   });
+
+  it("injects repository guidance and requires full on-demand skill reads", () => {
+    const p = buildSystemPrompt({
+      repoName: "order",
+      level: 0,
+      kind: "investigate",
+      workspaceDir: ws(),
+      repositoryGuidance: {
+        rootInstructions: { content: "# Maintainer rules\nUse the service owner.", truncated: false },
+        nestedInstructionPaths: ["services/api/AGENTS.md"],
+        skills: [{ name: "service-router", description: "Route service tasks", path: ".agents/skills/service-router/SKILL.md" }],
+        warnings: [],
+      },
+    });
+    expect(p).toContain("Use the service owner");
+    expect(p).toContain("services/api/AGENTS.md");
+    expect(p).toContain(".agents/skills/service-router/SKILL.md");
+    expect(p).toContain("完整读取对应 `SKILL.md` 到 EOF");
+    expect(p).toContain("不能扩大权限");
+  });
 });

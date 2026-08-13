@@ -1,5 +1,6 @@
 import {
   filterSecrets,
+  repoDisplayName,
   parseLayeredAnswer,
   repoCheckoutDir,
   runnerModelConfig,
@@ -130,7 +131,7 @@ export async function runInvestigationPipeline(
     deps.running.delete(sessionKey);
     const detail = filterSecrets(e instanceof Error ? e.message : String(e)).text;
     await lark
-      .patchCard(ackId, errorCard(`工作区准备失败:${detail}`, "请让管理员运行 pinery doctor 检查仓库与工作区配置。"))
+      .patchCard(ackId, errorCard(`项目代码准备失败:${detail}`, "请让管理员运行 pinery doctor 检查项目配置。"))
       .catch(() => {});
     storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: `workspace: ${detail}` });
     return;
@@ -257,7 +258,7 @@ export async function runInvestigationPipeline(
     .patchCard(
       ackId,
       answerCard(question, layered, {
-        repo: repo.name,
+        repo: repoDisplayName(repo),
         headShort: head?.short,
         durationMs,
         turns: result.turns,

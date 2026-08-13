@@ -1,6 +1,7 @@
 import {
   filterSecrets,
   repoCheckoutDir,
+  repoDisplayName,
   type PineryConfig,
   type RepoConfig,
   type AgentRunner,
@@ -8,7 +9,14 @@ import {
 } from "@pinery/core";
 import { RateLimiter, gate } from "./gateway.js";
 import { CANCEL_RE, runInvestigationPipeline } from "./investigation.js";
-import { deniedCard, errorCard, helpCard, statusCard, type Card } from "./lark/cards.js";
+import {
+  deniedCard,
+  errorCard,
+  helpCard,
+  projectChoiceCard,
+  statusCard,
+  type Card,
+} from "./lark/cards.js";
 import type { IncomingMessage } from "./lark/events.js";
 import type { LarkMessenger } from "./lark/messenger.js";
 import { headInfo } from "./repo-sync.js";
@@ -36,6 +44,7 @@ export interface OrchestratorDeps {
 export class Orchestrator {
   private readonly queues = new Map<string, Promise<void>>();
   private readonly running = new Map<string, AbortController>();
+  private readonly routeRepos = new Map<string, string>();
   private readonly limiter: RateLimiter;
   private queued = 0;
   private active = 0;
@@ -82,7 +91,12 @@ export class Orchestrator {
       return;
     }
 
-    const decision = gate(msg, { cfg, limiter: this.limiter, hasActiveSession });
+    const decision = gate(msg, {
+      cfg,
+      limiter: this.limiter,
+      hasActiveSession,
+      activeRepo: hasActiveSession ? (row?.repo ?? this.routeRepos.get(sessionKey)) : undefined,
+    });
     const inThread = msg.chatType === "group";
 
     switch (decision.action) {
@@ -94,13 +108,28 @@ export class Orchestrator {
       case "rate_limited":
         void this.safeReply(msg, deniedCard(decision.reply), inThread);
         return;
+      case "clarify":
+        void this.safeReply(
+          msg,
+          projectChoiceCard(decision.projects, decision.reply),
+          inThread,
+        );
+        return;
       case "help":
-        void this.safeReply(msg, helpCard({ repo: decision.repo?.name, levelName: decision.levelName }), inThread);
+        void this.safeReply(
+          msg,
+          helpCard({
+            repo: decision.repo ? repoDisplayName(decision.repo) : undefined,
+            levelName: decision.levelName,
+          }),
+          inThread,
+        );
         return;
       case "status":
         void this.replyStatus(msg, decision.repo, inThread);
         return;
       case "investigate":
+        this.routeRepos.set(sessionKey, decision.repo.name);
         this.enqueue(sessionKey, () => this.runInvestigation(msg, decision.repo, decision.question));
         return;
     }
@@ -159,7 +188,7 @@ export class Orchestrator {
     await this.safeReply(
       msg,
       statusCard({
-        repo: repo.name,
+        repo: repoDisplayName(repo),
         headShort: head?.short,
         headTime: head?.time,
         model: `${cfg.model.provider}/${cfg.model.id}`,

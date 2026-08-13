@@ -47,6 +47,8 @@
 - 🏠 **自托管,代码不出内网** — 单容器部署,飞书长连接接入,无需公网回调地址
 - ☁️ **或整机上云** — 同一套核心代码可全托管在 Cloudflare(Agents SDK + Computer + AI Gateway),免自有服务器
 - 🔌 **多模型自由切换** — pi-ai 26+ provider 开箱即用,支持网关改道与本地模型(vLLM / Ollama)
+- 🧠 **沿用仓库 Agent 规范** — 自动加载根 `AGENTS.md`,发现嵌套规则与 `.agents/skills`,按任务选择并完整读取相关 Skill
+- 💬 **自然项目路由** — 单项目直接问,多项目按名称/别名/会话意图判断,不确定时由 Bot 主动澄清
 - 🎚️ **能力分级授权** — L0 只读 → L3 危险操作逐级放权,user × repo × level 硬判鉴权
 - 🧩 **双窄接口可替换** — AgentRunner 与 WorkspaceProvider 皆是窄接口,pi 只是默认实现,harness 与工作区后端都欢迎社区替代
 - 🛡️ **纵深安全** — 工具白名单、路径围栏、secret 出站过滤、egress 白名单代理、审计落库

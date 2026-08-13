@@ -37,8 +37,9 @@ lark:
   encrypt_key: ${LARK_ENCRYPT_KEY}      # CF 形态必需(webhook 验签与解密)
 repos:
   - name: order-service
+    aliases: [订单, order]
     url: https://github.com/org/order.git
-    chats: [oc_xxx]
+    # chats: [oc_xxx]   # 可选:多项目时为该群指定默认项目;不是访问白名单
 model:
   provider: anthropic
   id: claude-sonnet-4-5
@@ -67,7 +68,10 @@ curl https://pinery-computer.<你的子域>.workers.dev/health
 请求网址 `https://<worker>/lark/events`,订阅 `im.message.receive_v1`;
 「加密策略」启用 **Encrypt Key**。逐步截图见 [docs/feishu-setup.md](../../docs/feishu-setup.md)。
 
-之后在飞书单聊里直接提问即可:🔍 调查中 → 进度流 → ✅ 分层答案卡片。
+之后在飞书单聊或群聊里直接提问即可:🔍 调查中 → 进度流 → ✅ 分层答案卡片。
+单项目会直接路由;多项目优先识别名称/`aliases`,无法确定时 Bot 会给出项目选择卡片。
+默认开放 L0 只读咨询;只有需要收紧时才配置 `group_open: false`、
+`p2p_open: false` 或显式 `permissions`。
 
 部署后可用 `PINERY_TOKEN` 运行一次固定、只读且有界的真实 Agent 冒烟。该
 入口不接受自定义 prompt:它会让正式 Agent 读取快照 manifest 并通过当前

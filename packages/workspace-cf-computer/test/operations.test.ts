@@ -135,6 +135,14 @@ describe("远程 Operations 与 pi 接口契约", () => {
     expect(found).toEqual(["/workspace/src/a.ts"]);
   });
 
+  it("repository guidance reads are bounded at the remote data source", async () => {
+    worker.files.set("/workspace/AGENTS.md", { content: Buffer.from("123456789") });
+    const ops = opsFor(worker);
+    const result = await ops.repositoryContext!.readText("/workspace/AGENTS.md", 4);
+    expect(result).toEqual({ text: "1234", truncated: true });
+    expect(worker.calls).toContain("readFile");
+  });
+
   it("grepSearch: searches server-side and returns workspace-relative paths", async () => {
     worker.files.set("/workspace/src/pay.ts", { content: Buffer.from("const REFUND = 1;\nother\n") });
     const ops = opsFor(worker);
@@ -207,7 +215,15 @@ describe("buildToolset 与远程工作区集成", () => {
 });
 
 describe("CfComputerWorkspaceProvider", () => {
-  const repo = { name: "demo", url: "https://github.com/org/demo.git", chats: [], permissions: [], p2p_open: true };
+  const repo = {
+    name: "demo",
+    aliases: [],
+    url: "https://github.com/org/demo.git",
+    chats: [],
+    permissions: [],
+    group_open: true,
+    p2p_open: true,
+  };
 
   it("clones once per workspace and reuses on the next acquire", async () => {
     const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });

@@ -4,6 +4,7 @@ import {
   defaultApiKeyEnv,
   parseConfig,
   repoForChat,
+  resolveRepoIntent,
   resolveUserLevel,
   runnerModelConfig,
 } from "../src/config.js";
@@ -31,6 +32,8 @@ describe("parseConfig", () => {
     const cfg = parseConfig(BASE_YAML, env);
     expect(cfg.lark.app_secret).toBe("s3cret");
     expect(cfg.repos[0]!.name).toBe("order-service");
+    expect(cfg.repos[0]!.aliases).toEqual([]);
+    expect(cfg.repos[0]!.group_open).toBe(true);
     expect(cfg.limits.session_max_turns).toBe(20);
     expect(cfg.runner.kind).toBe("pi");
     expect(cfg.workspace.root).toBe("~/.pinery");
@@ -61,8 +64,54 @@ describe("repoForChat", () => {
     expect(repoForChat(cfg, "oc_other", "p2p")?.name).toBe("order-service");
   });
 
-  it("returns undefined for unregistered group", () => {
-    expect(repoForChat(cfg, "oc_other", "group")).toBeUndefined();
+  it("falls back to the only repo for an unregistered group", () => {
+    expect(repoForChat(cfg, "oc_other", "group")?.name).toBe("order-service");
+  });
+});
+
+describe("resolveRepoIntent", () => {
+  const multi = parseConfig(
+    `
+lark: { app_id: x, app_secret: y }
+repos:
+  - { name: order-service, aliases: [订单], url: "https://example.com/order.git", chats: [oc_order] }
+  - { name: stock-service, aliases: [库存], url: "https://example.com/stock.git" }
+model: { provider: openrouter, id: test/model }
+`,
+    env,
+  );
+
+  it("prefers an explicit project alias", () => {
+    const result = resolveRepoIntent(multi, {
+      chatId: "oc_order",
+      text: "库存项目的扣减逻辑在哪里?",
+      activeRepo: "order-service",
+    });
+    expect(result.repo?.name).toBe("stock-service");
+    expect(result.source).toBe("intent");
+  });
+
+  it("continues the active project when the message has no project intent", () => {
+    const result = resolveRepoIntent(multi, {
+      chatId: "oc_other",
+      text: "继续看刚才的问题",
+      activeRepo: "stock-service",
+    });
+    expect(result.repo?.name).toBe("stock-service");
+    expect(result.source).toBe("session");
+  });
+
+  it("uses chats as an optional default routing hint", () => {
+    const result = resolveRepoIntent(multi, { chatId: "oc_order", text: "这个功能怎么实现?" });
+    expect(result.repo?.name).toBe("order-service");
+    expect(result.source).toBe("chat-default");
+  });
+
+  it("returns candidates instead of guessing across multiple projects", () => {
+    const result = resolveRepoIntent(multi, { chatId: "oc_other", text: "这个功能怎么实现?" });
+    expect(result.repo).toBeUndefined();
+    expect(result.source).toBe("ambiguous");
+    expect(result.candidates.map((repo) => repo.name)).toEqual(["order-service", "stock-service"]);
   });
 });
 
@@ -75,12 +124,14 @@ describe("resolveUserLevel", () => {
     expect(resolveUserLevel(repo, "ou_bob", "p2p", false)).toBe(1);
   });
 
-  it("registered group members default to L0", () => {
+  it("group members default to L0 without chat binding", () => {
     expect(resolveUserLevel(repo, "ou_stranger", "group", true)).toBe(0);
+    expect(resolveUserLevel(repo, "ou_stranger", "group", false)).toBe(0);
   });
 
-  it("unregistered group yields undefined", () => {
-    expect(resolveUserLevel(repo, "ou_stranger", "group", false)).toBeUndefined();
+  it("can explicitly restrict group access", () => {
+    expect(resolveUserLevel({ ...repo, group_open: false }, "ou_stranger", "group", false)).toBeUndefined();
+    expect(resolveUserLevel({ ...repo, group_open: false }, "ou_stranger", "group", true)).toBe(0);
   });
 
   it("p2p_open grants L0 in private chat", () => {

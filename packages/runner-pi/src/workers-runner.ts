@@ -20,6 +20,7 @@ import {
 } from "@pinery/core";
 import { isBuiltinProvider, ModelConfigError } from "./models-json.js";
 import { buildSystemPrompt } from "./prompt.js";
+import { loadRepositoryGuidance } from "./repository-guidance.js";
 import {
 	buildToolset,
 	describeToolCall,
@@ -104,12 +105,19 @@ export class WorkersPiRunner implements AgentRunner {
 		let aborted: RunnerAbortReason | undefined;
 
 		const settingsManager = SettingsManager.inMemory();
+		const operations = (workspace as { operations?: RemoteToolOperations })
+			.operations;
+		const repositoryGuidance = await loadRepositoryGuidance(
+			workspace.dir,
+			operations,
+		);
 		const systemPrompt = buildSystemPrompt({
 			repoName: workspace.repo,
 			level: opts.level,
 			kind: task.kind,
 			workspaceDir: workspace.dir,
 			branch: workspace.branch,
+			repositoryGuidance,
 		});
 
 		const resourceLoader = new DefaultResourceLoader({
@@ -132,8 +140,7 @@ export class WorkersPiRunner implements AgentRunner {
 		const customTools = buildToolset({
 			cwd: workspace.dir,
 			level: opts.level,
-			operations: (workspace as { operations?: RemoteToolOperations })
-				.operations,
+				operations,
 			onPolicyBlock: (info) => {
 				opts.onEvent?.({
 					type: "policy_block",

@@ -226,7 +226,7 @@ describe("Orchestrator", () => {
     await drain(o);
 
     const failed = JSON.stringify(lark.patches.at(-1));
-    expect(failed).toContain("工作区准备失败");
+    expect(failed).toContain("项目代码准备失败");
     expect(failed).toContain("cloudflare endpoint unreachable");
     expect(failed).not.toContain("调查中");
     expect(storage.listQa()).toHaveLength(0);
@@ -362,13 +362,14 @@ describe("Orchestrator", () => {
     expect(sent).not.toContain("调查中");
   });
 
-  it("unauthorized chat gets denied card", async () => {
+  it("an unbound chat can use the only project by default", async () => {
     const storage = new Storage(":memory:");
     const lark = new FakeLark();
     const o = new Orchestrator({ cfg, storage, runner: fakeRunner(() => okResult), lark });
     o.handle(msg({ chatId: "oc_unknown" }));
     await drain(o);
-    expect(JSON.stringify(lark.sent[0]?.card)).toContain("没有权限");
+    expect(JSON.stringify(lark.sent[0]?.card)).toContain("调查中");
+    expect(JSON.stringify(lark.patches.at(-1))).toContain("会退款");
     storage.close();
   });
 });

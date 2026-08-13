@@ -60,9 +60,13 @@
 
 在目标群 → 设置 → 群机器人 → 添加机器人 → 选择 Pinery。
 
-**获取群的 chat_id**(填进 `pinery.yaml` 的 `repos[].chats`):
+Pinery 默认不要求绑定群聊:单项目直接使用;多项目优先按问题中的项目名/别名判断,
+无法确定时会主动给出项目选择卡片。
 
-- 方式 A:先不填 chats 启动 Pinery,在群里 @ 它,日志会打印被拒会话的 chat_id(`oc_` 开头)
+如果希望某个群默认指向特定项目,可选获取群的 chat_id,填进
+`pinery.yaml` 的 `repos[].chats`(它只是路由提示,不是访问白名单):
+
+- 方式 A:先不填 chats 启动 Pinery,在群里 @ 它,从事件日志查看 chat_id(`oc_` 开头)
 - 方式 B:用[开放平台 API 调试台](https://open.feishu.cn/api-explorer)调 `im.v1.chat.list`
 
 ## 7. 校验
@@ -81,6 +85,6 @@ pinery start       # 启动长连接服务
 ## 常见问题
 
 - **doctor 提示凭据失败**:检查 App Secret 是否复制完整;应用是否已发布;网络能否到达 open.feishu.cn。
-- **群里 @ 没反应**:确认 ③ 中群消息权限已开通、④ 中事件已添加、应用已发布新版本、群已登记进 `repos[].chats`。
+- **群里 @ 没反应**:确认 ③ 中群消息权限已开通、④ 中事件已添加、应用已发布新版本,并确认 Bot 已加入该群。
 - **单聊没反应**:确认 `im:message.p2p_msg:readonly` 已开通;查看 `pinery start` 日志。
 - **海外 Lark**:`pinery.yaml` 中 `lark.endpoint: lark`。

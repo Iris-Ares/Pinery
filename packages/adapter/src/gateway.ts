@@ -1,6 +1,7 @@
 import {
   LEVEL_NAMES,
-  repoForChat,
+  repoDisplayName,
+  resolveRepoIntent,
   resolveUserLevel,
   type PermissionLevel,
   type PineryConfig,
@@ -17,6 +18,7 @@ export type GateDecision =
   | { action: "ignore"; reason: string }
   | { action: "denied"; reply: string }
   | { action: "rate_limited"; reply: string }
+  | { action: "clarify"; projects: string[]; reply: string }
   | { action: "help"; repo?: RepoConfig; levelName?: string }
   | { action: "status"; repo: RepoConfig }
   | { action: "investigate"; repo: RepoConfig; level: PermissionLevel; question: string };
@@ -45,6 +47,8 @@ export interface GateContext {
   limiter: RateLimiter;
   /** 该消息对应 session key 是否已有活跃会话(话题内免 @ 延续的依据) */
   hasActiveSession: boolean;
+  /** 活跃话题上次已选择的项目;用户明确点名其他项目时仍以明确意图优先 */
+  activeRepo?: string;
 }
 
 const HELP_RE = /^(help|帮助|你能干什么|使用说明)[??!!。.]?$/i;
@@ -58,26 +62,56 @@ export function gate(msg: IncomingMessage, ctx: GateContext): GateDecision {
     return { action: "ignore", reason: "group-not-addressed" };
   }
 
-  const repo = repoForChat(cfg, msg.chatId, msg.chatType);
-  if (!repo) {
-    if (msg.chatType === "group" && !msg.mentionsBot) {
-      return { action: "ignore", reason: "unregistered-chat" };
-    }
+  const text = msg.text.trim();
+  const resolution = resolveRepoIntent(cfg, {
+    chatId: msg.chatId,
+    text,
+    activeRepo: ctx.activeRepo,
+  });
+  const available = resolution.candidates.filter(
+    (candidate) =>
+      resolveUserLevel(
+        candidate,
+        msg.senderOpenId,
+        msg.chatType,
+        candidate.chats.includes(msg.chatId),
+      ) !== undefined,
+  );
+
+  if (!text || HELP_RE.test(text)) {
+    const repo = resolution.repo;
+    const level = repo
+      ? resolveUserLevel(repo, msg.senderOpenId, msg.chatType, repo.chats.includes(msg.chatId))
+      : undefined;
     return {
-      action: "denied",
-      reply: "本会话未绑定任何仓库。请管理员在 pinery.yaml 的 repos[].chats 中登记本群后重启 Pinery。",
+      action: "help",
+      ...(repo && level !== undefined
+        ? { repo, levelName: LEVEL_NAMES[level] }
+        : {}),
     };
   }
 
-  const chatRegistered = repo.chats.includes(msg.chatId);
-  const level = resolveUserLevel(repo, msg.senderOpenId, msg.chatType, chatRegistered);
-  if (level === undefined) {
-    return { action: "denied", reply: "你在该仓库上没有已授权的能力级别,请联系仓库管理员。" };
+  const repo = resolution.repo;
+  if (!repo) {
+    if (available.length === 0) {
+      return { action: "denied", reply: "当前没有你可访问的项目,请联系管理员。" };
+    }
+    const projects = available.map(repoDisplayName);
+    return {
+      action: "clarify",
+      projects,
+      reply: `我还不能确定你指的是哪个项目。请在问题里带上项目名:${projects.join("、")}`,
+    };
   }
 
-  const text = msg.text.trim();
-  if (!text || HELP_RE.test(text)) {
-    return { action: "help", repo, levelName: LEVEL_NAMES[level] };
+  const level = resolveUserLevel(
+    repo,
+    msg.senderOpenId,
+    msg.chatType,
+    repo.chats.includes(msg.chatId),
+  );
+  if (level === undefined) {
+    return { action: "denied", reply: "你暂时不能访问这个项目,请联系管理员。" };
   }
   if (STATUS_RE.test(text)) {
     return { action: "status", repo };

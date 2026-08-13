@@ -28,10 +28,11 @@ function msg(over: Partial<IncomingMessage>): IncomingMessage {
   };
 }
 
-const ctx = (over: { hasActiveSession?: boolean } = {}) => ({
-  cfg,
+const ctx = (over: { hasActiveSession?: boolean; activeRepo?: string; config?: typeof cfg } = {}) => ({
+  cfg: over.config ?? cfg,
   limiter: new RateLimiter(100),
   hasActiveSession: over.hasActiveSession ?? false,
+  activeRepo: over.activeRepo,
 });
 
 describe("gate", () => {
@@ -54,9 +55,9 @@ describe("gate", () => {
     expect(d.action).toBe("investigate");
   });
 
-  it("denies unregistered group when mentioned", () => {
+  it("allows an unregistered group to use the only project", () => {
     const d = gate(msg({ chatId: "oc_other" }), ctx());
-    expect(d.action).toBe("denied");
+    expect(d.action).toBe("investigate");
   });
 
   it("silently ignores unregistered group without mention", () => {
@@ -66,6 +67,55 @@ describe("gate", () => {
   it("p2p falls back to sole repo with L0", () => {
     const d = gate(msg({ chatId: "oc_dm", chatType: "p2p", mentionsBot: false }), ctx());
     expect(d.action).toBe("investigate");
+  });
+
+  it("asks which project when intent is ambiguous", () => {
+    const multi = parseConfig(
+      `
+lark: { app_id: cli_x, app_secret: s }
+repos:
+  - { name: order, aliases: [订单], url: "https://example.com/order.git" }
+  - { name: stock, aliases: [库存], url: "https://example.com/stock.git" }
+model: { provider: openrouter, id: test/model }
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    const d = gate(msg({ chatId: "oc_other", text: "这个功能怎么实现?" }), ctx({ config: multi }));
+    expect(d.action).toBe("clarify");
+    if (d.action === "clarify") expect(d.projects).toEqual(["订单", "库存"]);
+  });
+
+  it("routes by explicit alias before the active project", () => {
+    const multi = parseConfig(
+      `
+lark: { app_id: cli_x, app_secret: s }
+repos:
+  - { name: order, aliases: [订单], url: "https://example.com/order.git" }
+  - { name: stock, aliases: [库存], url: "https://example.com/stock.git" }
+model: { provider: openrouter, id: test/model }
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    const d = gate(
+      msg({ chatId: "oc_other", text: "库存:继续调查", rootId: "om_root" }),
+      ctx({ config: multi, hasActiveSession: true, activeRepo: "order" }),
+    );
+    expect(d.action).toBe("investigate");
+    if (d.action === "investigate") expect(d.repo.name).toBe("stock");
+  });
+
+  it("can opt into restricted group access", () => {
+    const restricted = parseConfig(
+      `
+lark: { app_id: cli_x, app_secret: s }
+repos:
+  - { name: order, url: "https://example.com/order.git", group_open: false }
+model: { provider: openrouter, id: test/model }
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    const d = gate(msg({ chatId: "oc_other" }), ctx({ config: restricted }));
+    expect(d.action).toBe("denied");
   });
 
   it("explicit permission user keeps configured level", () => {

@@ -8,6 +8,7 @@ import {
 	deniedCard,
 	errorCard,
 	helpCard,
+	projectChoiceCard,
 	statusCard,
 } from "@pinery/adapter/lark/cards";
 import type { IncomingMessage } from "@pinery/adapter/lark/events";
@@ -15,6 +16,7 @@ import { sessionKeyFor } from "@pinery/adapter/sessions";
 import { Storage } from "@pinery/adapter/storage";
 import {
 	filterSecrets,
+	repoDisplayName,
 	type PineryConfig,
 	type RepoConfig,
 	runnerModelConfig,
@@ -394,8 +396,18 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 				row.state === "active" &&
 				Date.now() - row.updated_at <=
 					cfg.limits.session_idle_archive_min * 60_000);
+		const pendingRepo = sql
+			.exec<{ repo: string }>(
+				"SELECT repo FROM pending_msgs ORDER BY id LIMIT 1",
+			)
+			.toArray()[0]?.repo;
 
-		const decision = gate(msg, { cfg, limiter, hasActiveSession });
+		const decision = gate(msg, {
+			cfg,
+			limiter,
+			hasActiveSession,
+			activeRepo: hasActiveSession ? (row?.repo ?? pendingRepo) : undefined,
+		});
 		const inThread = msg.chatType === "group";
 
 		switch (decision.action) {
@@ -407,12 +419,23 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 					.replyCard(msg.messageId, deniedCard(decision.reply), inThread)
 					.catch(() => {});
 				return { accepted: true, reason: decision.action };
+			case "clarify":
+				await lark
+					.replyCard(
+						msg.messageId,
+						projectChoiceCard(decision.projects, decision.reply),
+						inThread,
+					)
+					.catch(() => {});
+				return { accepted: true, reason: "clarify" };
 			case "help":
 				await lark
 					.replyCard(
 						msg.messageId,
 						helpCard({
-							repo: decision.repo?.name,
+							repo: decision.repo
+								? repoDisplayName(decision.repo)
+								: undefined,
 							levelName: decision.levelName,
 						}),
 						inThread,
@@ -528,7 +551,7 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 			.replyCard(
 				msg.messageId,
 				statusCard({
-					repo: repo.name,
+					repo: repoDisplayName(repo),
 					model: `${cfg.model.provider}/${cfg.model.id}`,
 					sessionTurns: row?.turns,
 					sessionState: row?.state,

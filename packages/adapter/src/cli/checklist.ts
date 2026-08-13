@@ -11,7 +11,7 @@ export function larkChecklist(endpoint: "feishu" | "lark"): string {
     "│      - im:message:send_as_bot            (以应用身份发消息)",
     "│      - im:message.p2p_msg:readonly       (读取单聊消息)",
     "│      - im:message.group_at_msg:readonly  (读取群内 @ 机器人消息)",
-    "│      - im:message.group_msg:readonly     (可选:话题内追问免 @,需申请)",
+    "│      - im:message:readonly               (动态读取群历史,复杂群聊必需)",
     "│ 4. 「事件与回调」→ 订阅方式选「使用长连接接收事件」→ 添加事件:",
     "│      - im.message.receive_v1(接收消息)",
     "│ 5. 「版本管理与发布」→ 创建版本并发布(企业内可用)",

@@ -36,6 +36,7 @@ describe("dynamic relevant group context", () => {
 
   it("paginates on every @ and can retrieve relevance from a later page", async () => {
     const tokens: Array<string | undefined> = [];
+    const logs: string[] = [];
     const lark = {
       listMessagesPage: async (
         _container: { type: "chat" | "thread"; id: string },
@@ -56,10 +57,18 @@ describe("dynamic relevant group context", () => {
       },
     } as LarkMessenger;
 
-    await expect(loadRelevantGroupContext(lark, current)).resolves.toContain("退款审批");
+    await expect(loadRelevantGroupContext(lark, current, (line) => logs.push(line))).resolves.toContain("退款审批");
     expect(tokens).toEqual([undefined, "page-2"]);
     await loadRelevantGroupContext(lark, current);
     expect(tokens).toEqual([undefined, "page-2", undefined, "page-2"]);
+    expect(JSON.parse(logs[0] ?? "{}")).toEqual({
+      event: "pinery.group_context",
+      status: "loaded",
+      containerType: "chat",
+      pages: 2,
+      candidates: 2,
+      selected: 2,
+    });
   });
 
   it("does not fetch for an unmentioned group message and degrades on permission failure", async () => {
@@ -77,7 +86,15 @@ describe("dynamic relevant group context", () => {
     const logs: string[] = [];
     await expect(loadRelevantGroupContext(lark, current, (line) => logs.push(line))).resolves.toBeUndefined();
     expect(calls).toBe(1);
-    expect(logs[0]).toContain("降级");
+    expect(JSON.parse(logs[0] ?? "{}")).toEqual({
+      event: "pinery.group_context",
+      status: "error",
+      containerType: "chat",
+      pages: 0,
+      candidates: 0,
+      errorName: "Error",
+      detail: "permission denied",
+    });
   });
 
   it("excludes current and future messages", () => {

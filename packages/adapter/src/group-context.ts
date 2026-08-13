@@ -64,6 +64,7 @@ export async function loadRelevantGroupContext(
   const seenMessages = new Set<string>();
   const seenTokens = new Set<string>();
   let pageToken: string | undefined;
+  let pages = 0;
 
   try {
     for (let pageNumber = 0; pageNumber < options.maxPages && messages.length < options.maxMessages; pageNumber++) {
@@ -71,6 +72,7 @@ export async function loadRelevantGroupContext(
         pageSize: Math.min(options.pageSize, options.maxMessages - messages.length),
         ...(pageToken ? { pageToken } : {}),
       });
+      pages++;
       for (const message of page.messages) {
         if (seenMessages.has(message.messageId)) continue;
         seenMessages.add(message.messageId);
@@ -85,13 +87,20 @@ export async function loadRelevantGroupContext(
       seenTokens.add(page.pageToken);
       pageToken = page.pageToken;
     }
-    return renderRelevantGroupContext(messages, msg, options);
-  } catch (error) {
+    const rendered = renderRelevantGroupContext(messages, msg, options);
     log?.(
-      `[group-context] 动态历史检索失败，降级为已绑定 runner 会话:${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      JSON.stringify({
+        event: "pinery.group_context",
+        status: rendered ? "loaded" : "empty",
+        containerType: container.type,
+        pages,
+        candidates: messages.length,
+        selected: rendered ? selectedMessageCount(rendered) : 0,
+      }),
     );
+    return rendered;
+  } catch (error) {
+    log?.(JSON.stringify(groupContextFailure(error, container.type, pages, messages.length)));
     return undefined;
   }
 }
@@ -224,4 +233,46 @@ function numericTime(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function selectedMessageCount(rendered: string): number {
+  return rendered
+    .split("\n")
+    .filter((line) => line.startsWith("- ") && !line.startsWith("- 当前提问者:"))
+    .length;
+}
+
+function groupContextFailure(
+  error: unknown,
+  containerType: "chat" | "thread",
+  pages: number,
+  candidates: number,
+): Record<string, unknown> {
+  const details = error as {
+    name?: unknown;
+    message?: unknown;
+    code?: unknown;
+    httpStatus?: unknown;
+  };
+  const code = typeof details?.code === "number" ? details.code : undefined;
+  const httpStatus =
+    typeof details?.httpStatus === "number" ? details.httpStatus : undefined;
+  // LarkApiError.message 会包含带 chat_id/page_token 的请求 URL。结构化日志只保留
+  // code/status，避免把会话标识写进日志；普通错误保留短消息便于定位网络故障。
+  const detail =
+    code === undefined && typeof details?.message === "string"
+      ? details.message.slice(0, 200)
+      : undefined;
+  return {
+    event: "pinery.group_context",
+    status: "error",
+    containerType,
+    pages,
+    candidates,
+    errorName:
+      typeof details?.name === "string" ? details.name : typeof error,
+    ...(code !== undefined ? { code } : {}),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(detail ? { detail } : {}),
+  };
 }

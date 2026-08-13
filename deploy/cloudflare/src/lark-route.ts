@@ -1,6 +1,6 @@
 import { normalizeMessage, type RawReceiveEvent } from "@pinery/adapter/lark/events";
 import { sessionKeyFor } from "@pinery/adapter/sessions";
-import { LarkFetchClient, parseWebhookBody, safeEqualStr, verifyLarkSignature } from "@pinery/lark-fetch";
+import { LarkFetchClient, parseWebhookBody, safeEqualStr, verifyLarkWebhookSignature } from "@pinery/lark-fetch";
 import type { PineryConfig } from "@pinery/core";
 import { getAgentByName } from "agents";
 import type { PineryAgent } from "./agent.js";
@@ -8,7 +8,7 @@ import { loadWorkerConfig, type PineryWorkerEnv } from "./config.js";
 
 /**
  * 飞书 webhook 入口(POST /lark/events):
- * 验签(原始密文体)→ 解密/challenge 分流 → 归一化 → 按 session_key 路由到
+ * 解密/challenge 分流 → 事件验签(原始密文体)→ 归一化 → 按 session_key 路由到
  * PineryAgent(handleEvent 轻活立即返回)→ 200。
  * challenge 走 1 秒预算不经 DO;事件走 3 秒预算(去重与入列 <100ms)。
  */
@@ -48,25 +48,34 @@ export async function handleLarkEvents(request: Request, env: PineryWorkerEnv): 
   if (!encryptKey) return new Response("lark.encrypt_key 未配置", { status: 500 });
 
   const raw = await request.text();
+  const parsed = await parseWebhookBody(raw, encryptKey);
 
-  // 验签在解密之前、对原始请求体做(飞书对配置了 Encrypt Key 的应用全量签名)
+  if (parsed.kind === "challenge") {
+    // 飞书的请求网址校验不带常规事件签名;先解密并回显 challenge。
+    // Verification Token 配置后仍用于约束 challenge 来自目标应用。
+    if (cfg.lark.verification_token && !safeEqualStr(parsed.token ?? "", cfg.lark.verification_token)) {
+      return new Response("verification token mismatch", { status: 401 });
+    }
+    return Response.json({ challenge: parsed.challenge });
+  }
+
+  // 请求网址校验除外;真实事件仍在业务解析前对原始密文体强制验签。
   const timestamp = request.headers.get("X-Lark-Request-Timestamp") ?? "";
   const nonce = request.headers.get("X-Lark-Request-Nonce") ?? "";
   const signature = request.headers.get("X-Lark-Signature") ?? "";
-  if (!(await verifyLarkSignature(encryptKey, timestamp, nonce, raw, signature))) {
+  if (
+    !(await verifyLarkWebhookSignature(parsed, {
+      encryptKey,
+      timestamp,
+      nonce,
+      rawBody: raw,
+      signature,
+    }))
+  ) {
     return new Response("signature mismatch", { status: 401 });
   }
 
-  const parsed = await parseWebhookBody(raw, encryptKey);
-
   switch (parsed.kind) {
-    case "challenge": {
-      // Verification Token 弱校验(配置了才比;Encrypt Key 验签已是强校验)
-      if (cfg.lark.verification_token && !safeEqualStr(parsed.token ?? "", cfg.lark.verification_token)) {
-        return new Response("verification token mismatch", { status: 401 });
-      }
-      return Response.json({ challenge: parsed.challenge });
-    }
     case "unsupported":
       // 结构不识别不给 4xx:避免飞书按失败重试同一事件(15s/5m/1h/6h)
       return Response.json({ ok: true, ignored: parsed.reason });

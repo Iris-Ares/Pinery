@@ -1,6 +1,7 @@
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { parseWebhookBody } from "../src/webhook.js";
+import { computeLarkSignature } from "../src/crypto.js";
+import { parseWebhookBody, verifyLarkWebhookSignature } from "../src/webhook.js";
 
 function encryptLikeLark(encryptKey: string, plaintext: string): string {
   const key = createHash("sha256").update(encryptKey, "utf8").digest();
@@ -39,6 +40,58 @@ describe("parseWebhookBody", () => {
       eventType: "im.message.receive_v1",
       event: { message: { message_id: "om_1" } },
     });
+  });
+
+  it("skips signature headers only for URL challenges", async () => {
+    const challengeBody = JSON.stringify({
+      encrypt: encryptLikeLark(
+        KEY,
+        JSON.stringify({ challenge: "c-no-signature", token: "v", type: "url_verification" }),
+      ),
+    });
+    const challenge = await parseWebhookBody(challengeBody, KEY);
+    expect(
+      await verifyLarkWebhookSignature(challenge, {
+        encryptKey: KEY,
+        timestamp: "",
+        nonce: "",
+        rawBody: challengeBody,
+        signature: "",
+      }),
+    ).toBe(true);
+
+    const eventBody = JSON.stringify({
+      encrypt: encryptLikeLark(
+        KEY,
+        JSON.stringify({
+          schema: "2.0",
+          header: { event_id: "evt-signed", event_type: "im.message.receive_v1" },
+          event: {},
+        }),
+      ),
+    });
+    const event = await parseWebhookBody(eventBody, KEY);
+    const timestamp = "1786000000";
+    const nonce = "nonce";
+    const signature = await computeLarkSignature(KEY, timestamp, nonce, eventBody);
+    expect(
+      await verifyLarkWebhookSignature(event, {
+        encryptKey: KEY,
+        timestamp,
+        nonce,
+        rawBody: eventBody,
+        signature,
+      }),
+    ).toBe(true);
+    expect(
+      await verifyLarkWebhookSignature(event, {
+        encryptKey: KEY,
+        timestamp,
+        nonce,
+        rawBody: eventBody,
+        signature: "",
+      }),
+    ).toBe(false);
   });
 
   it("flags encrypted payload without configured key", async () => {

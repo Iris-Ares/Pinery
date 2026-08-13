@@ -63,6 +63,15 @@ describe("TenantTokenManager", () => {
 });
 
 describe("LarkFetchClient", () => {
+  it("validates app credentials without exposing the tenant token", async () => {
+    const { impl, calls } = fakeFetch([{ body: TOKEN_OK }]);
+    const client = new LarkFetchClient({ appId: "a", appSecret: "s", fetchImpl: impl });
+
+    await expect(client.authenticate()).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("/open-apis/auth/v3/tenant_access_token/internal");
+  });
+
   it("sends, replies and patches cards with bearer token", async () => {
     const { impl, calls } = fakeFetch([
       { body: TOKEN_OK },

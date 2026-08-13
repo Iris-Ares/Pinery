@@ -8,6 +8,8 @@ import {
 } from "@cloudflare/computer";
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import { createGitClient } from "@cloudflare/computer/git";
+import { filterSecrets } from "@pinery/core";
+import { LarkFetchClient } from "@pinery/lark-fetch";
 import {
 	ERROR_STATUS,
 	normalizeWorkspacePath,
@@ -19,6 +21,7 @@ import {
 } from "@pinery/workspace-cf-computer/protocol";
 import { getAgentByName } from "agents";
 import type { PineryAgent } from "./agent.js";
+import { loadWorkerConfig } from "./config.js";
 import { handleLarkEvents } from "./lark-route.js";
 import {
 	type GitOpFailure,
@@ -397,6 +400,46 @@ export default {
 
 		if (url.pathname === "/health")
 			return json({ ok: true, protocol: PROTOCOL_VERSION });
+
+		if (url.pathname === "/v1/lark/check" && request.method === "POST") {
+			if (!authorized(request, env.PINERY_TOKEN))
+				return fail("unauthorized", "鉴权失败");
+			try {
+				const cfg = loadWorkerConfig(env as never);
+				const client = new LarkFetchClient({
+					appId: cfg.lark.app_id,
+					appSecret: cfg.lark.app_secret,
+					domain: cfg.lark.endpoint,
+					baseUrl: cfg.lark.api_base,
+				});
+				await client.authenticate();
+				const bot = await client.botInfo();
+				return json({
+					ok: true,
+					result: {
+						authenticated: true,
+						botIdentityResolved: Boolean(bot.openId),
+					},
+				});
+			} catch (error) {
+				const detail = filterSecrets(
+					error instanceof Error ? error.message : String(error),
+				).text;
+				console.error(
+					JSON.stringify({ event: "pinery.lark.check_failed", error: detail }),
+				);
+				return json(
+					{
+						ok: false,
+						error: {
+							code: "lark_check_failed",
+							message: "飞书应用鉴权失败;请检查应用配置与权限",
+						},
+					},
+					502,
+				);
+			}
+		}
 
 		// CF 形态:飞书 webhook 事件入口(验签/解密在路由内,不走 Bearer 鉴权)
 		if (url.pathname === "/lark/events" && request.method === "POST") {

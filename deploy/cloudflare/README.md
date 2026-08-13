@@ -73,6 +73,17 @@ curl https://pinery-computer.<你的子域>.workers.dev/health
 入口不接受自定义 prompt:它会让正式 Agent 读取快照 manifest 并通过当前
 provider 回显 commit,用于同时验证 Agent DO、工作区工具与模型调用。
 
+先验证飞书 App ID/Secret 能否换取 tenant token,以及机器人身份是否已启用。
+响应只返回布尔状态,不会回传 token、机器人 open_id 或应用配置:
+
+```bash
+curl -X POST https://<worker>.workers.dev/v1/lark/check \
+  -H "Authorization: Bearer $PINERY_TOKEN"
+```
+
+只有 `ok=true`、`authenticated=true` 且 `botIdentityResolved=true` 才说明应用
+凭据与机器人能力均可用;这仍不替代飞书后台的 webhook challenge 和真实消息验收。
+
 ```bash
 curl -X POST https://<worker>.workers.dev/v1/agent/smoke \
   -H "Authorization: Bearer $PINERY_TOKEN"

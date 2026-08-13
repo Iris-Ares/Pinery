@@ -37,6 +37,11 @@ export class LarkFetchClient {
     this.base = opts.baseUrl?.replace(/\/+$/, "") ?? larkApiBase(opts.domain);
   }
 
+  /** 仅验证应用凭据可换取 tenant token;不向调用方暴露 token。 */
+  async authenticate(): Promise<void> {
+    await this.tokens.get();
+  }
+
   /** 发送交互卡片,返回 message_id */
   async sendCard(chatId: string, contentJson: string): Promise<string | undefined> {
     const data = await this.request<{ message_id?: string }>(

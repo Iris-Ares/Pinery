@@ -1,0 +1,33 @@
+diff --git a/dist/utils/validation.js b/dist/utils/validation.js
+index 9ba1a5f5aecd015b01d1e88fdb62b8dcca176e52..618d383796137dd36a24c92784b433a60f0a11e1 100644
+--- a/dist/utils/validation.js
++++ b/dist/utils/validation.js
+@@ -1,6 +1,4 @@
+-import { Compile } from "typebox/compile";
+ import { Value } from "typebox/value";
+-const validatorCache = new WeakMap();
+ const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
+ function isRecord(value) {
+     return typeof value === "object" && value !== null;
+@@ -208,14 +206,13 @@ function coerceWithJsonSchema(value, schema) {
+     return nextValue;
+ }
+ function getValidator(schema) {
+-    const key = schema;
+-    const cached = validatorCache.get(key);
+-    if (cached) {
+-        return cached;
+-    }
+-    const validator = Compile(schema);
+-    validatorCache.set(key, validator);
+-    return validator;
++    // Cloudflare Workers disallow eval/new Function. TypeBox's Compile() uses
++    // runtime code generation, while Value.Check/Errors are interpretive and
++    // preserve the same validation contract in restricted runtimes.
++    return {
++        Check: (value) => Value.Check(schema, value),
++        Errors: (value) => Value.Errors(schema, value),
++    };
+ }
+ function formatValidationPath(error) {
+     if (error.keyword === "required") {

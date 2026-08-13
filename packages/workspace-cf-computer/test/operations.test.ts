@@ -233,6 +233,20 @@ describe("CfComputerWorkspaceProvider", () => {
     expect(t.readOnly).toBe(false);
   });
 
+  it("shares one pre-hydrated snapshot workspace across L0 sessions", async () => {
+    const p = new CfComputerWorkspaceProvider({
+      endpoint: worker.url,
+      token: TOKEN,
+      retries: 0,
+      sharedSnapshotId: "s-example-main-snapshot",
+    });
+    const a = await p.acquireSession(repo, "p2p:oc_1");
+    const b = await p.acquireSession(repo, "group:oc_2");
+    expect(a.handle).toBe("s-example-main-snapshot");
+    expect(b.handle).toBe(a.handle);
+    expect(worker.calls.filter((call) => call === "gitClone")).toHaveLength(1);
+  });
+
   it("rejects SSH repo urls with an actionable message (isomorphic-git has no SSH)", async () => {
     const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
     await expect(

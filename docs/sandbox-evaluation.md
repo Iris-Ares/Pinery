@@ -70,7 +70,7 @@ Durable Object(每 agent/会话一个,天然串行)
 **限制(诚实清单)**:
 
 - **PREVIEW ONLY**,官方明示不可生产;0.1.x,API 不稳定(`using` 显式 stub
-  管理、Worker Loader 需 `experimental` flag)
+  管理;Worker Loader 通过 `worker_loaders` 绑定启用)
 - **不适合大仓库**:容器侧 FS 驻内存 + FUSE 转发,重 I/O(大 `node_modules`
   安装、整仓 clone)明显慢;官方措辞「agent-scale workspaces, not full
   monorepos」;~10GB/workspace 上限

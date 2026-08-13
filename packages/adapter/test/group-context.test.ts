@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   combineInvestigationContext,
   loadRelevantGroupContext,
+  loadRelevantGroupContextResult,
   renderRelevantGroupContext,
 } from "../src/group-context.js";
 import type { IncomingMessage } from "../src/lark/events.js";
@@ -57,7 +58,9 @@ describe("dynamic relevant group context", () => {
       },
     } as LarkMessenger;
 
-    await expect(loadRelevantGroupContext(lark, current, (line) => logs.push(line))).resolves.toContain("退款审批");
+    const result = await loadRelevantGroupContextResult(lark, current, (line) => logs.push(line));
+    expect(result.context).toContain("退款审批");
+    expect(result).toMatchObject({ status: "loaded", pages: 2, candidates: 2, selected: 2 });
     expect(tokens).toEqual([undefined, "page-2"]);
     await loadRelevantGroupContext(lark, current);
     expect(tokens).toEqual([undefined, "page-2", undefined, "page-2"]);
@@ -84,7 +87,9 @@ describe("dynamic relevant group context", () => {
     expect(calls).toBe(0);
 
     const logs: string[] = [];
-    await expect(loadRelevantGroupContext(lark, current, (line) => logs.push(line))).resolves.toBeUndefined();
+    const failure = await loadRelevantGroupContextResult(lark, current, (line) => logs.push(line));
+    expect(failure).toMatchObject({ status: "error", selected: 0 });
+    expect(failure).not.toHaveProperty("code");
     expect(calls).toBe(1);
     expect(JSON.parse(logs[0] ?? "{}")).toEqual({
       event: "pinery.group_context",
@@ -92,6 +97,7 @@ describe("dynamic relevant group context", () => {
       containerType: "chat",
       pages: 0,
       candidates: 0,
+      selected: 0,
       errorName: "Error",
       detail: "permission denied",
     });

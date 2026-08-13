@@ -13,6 +13,7 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("## 结论");
     expect(p).toContain("数据与指令的边界");
     expect(p).toContain("多个合理指代");
+    expect(p).toContain("已经成功从飞书动态读取");
     expect(p).toContain("直接自然");
     expect(p).toContain("order");
   });

@@ -12,7 +12,11 @@ import {
   type WorkspaceProvider,
 } from "@pinery/core";
 import { answerCard, errorCard, progressCard, timeoutCard, toolLine, type Card } from "./lark/cards.js";
-import { combineInvestigationContext, loadRelevantGroupContext } from "./group-context.js";
+import {
+  combineInvestigationContext,
+  type GroupContextLoadResult,
+  loadRelevantGroupContextResult,
+} from "./group-context.js";
 import type { IncomingMessage } from "./lark/events.js";
 import type { LarkMessenger } from "./lark/messenger.js";
 import { buildSessionSummary, planSession, replyInThreadFor, sessionKeyFor } from "./sessions.js";
@@ -121,7 +125,7 @@ export async function runInvestigationPipeline(
   // 获取本身可能失败(远端不可达、clone 失败),必须收敛卡片与任务状态,
   // 否则进度卡片会永远停在「调查中」。
   let workspace: ProvidedWorkspace;
-  let groupContext: string | undefined;
+  let groupContext: GroupContextLoadResult;
   try {
     [workspace, groupContext] = await Promise.all([
       deps.workspaces
@@ -132,7 +136,7 @@ export async function runInvestigationPipeline(
             dir: repoCheckoutDir(cfg, repo),
             readOnly: true,
           }),
-      loadRelevantGroupContext(lark, msg, log),
+      loadRelevantGroupContextResult(lark, msg, log),
     ]);
   } catch (e) {
     if (patchTimer) clearTimeout(patchTimer);
@@ -170,7 +174,7 @@ export async function runInvestigationPipeline(
     return;
   }
 
-  const taskContext = combineInvestigationContext(plan.context, groupContext);
+  const taskContext = combineInvestigationContext(plan.context, groupContext.context);
 
   const checkoutDir = workspace.dir;
   let result: Awaited<ReturnType<AgentRunner["run"]>>;
@@ -301,6 +305,15 @@ export async function runInvestigationPipeline(
         costUsd: result.usage?.costUsd,
         redacted: layered.redacted,
         truncated,
+        groupContext:
+          groupContext.status === "skipped"
+            ? undefined
+            : {
+                status: groupContext.status,
+                selected: groupContext.selected,
+                candidates: groupContext.candidates,
+                code: groupContext.code,
+              },
       }),
     )
     .catch((e: unknown) => log(`[investigation] 答案卡片更新失败:${String(e)}`));

@@ -99,6 +99,12 @@ export interface AnswerMeta {
   costUsd?: number;
   redacted?: boolean;
   truncated?: boolean;
+  groupContext?: {
+    status: "loaded" | "empty" | "error";
+    selected: number;
+    candidates: number;
+    code?: number;
+  };
 }
 
 const CONFIDENCE_TEMPLATE: Record<ConfidenceLevel, string> = {
@@ -127,6 +133,13 @@ export function answerCard(question: string, answer: LayeredAnswer, meta: Answer
   ];
   if (meta.model) metaBits.push(meta.model);
   if (meta.costUsd !== undefined && meta.costUsd > 0) metaBits.push(`$${meta.costUsd.toFixed(4)}`);
+  if (meta.groupContext?.status === "loaded") {
+    metaBits.push(`群上下文:${meta.groupContext.selected}/${meta.groupContext.candidates} 条`);
+  } else if (meta.groupContext?.status === "empty") {
+    metaBits.push(`群上下文:0/${meta.groupContext.candidates} 条`);
+  } else if (meta.groupContext?.status === "error") {
+    metaBits.push(`群上下文:不可用${meta.groupContext.code !== undefined ? `(${meta.groupContext.code})` : ""}`);
+  }
   if (meta.redacted) metaBits.push("⚠️ 输出含敏感内容已脱敏");
   if (meta.truncated) metaBits.push("已截断");
 

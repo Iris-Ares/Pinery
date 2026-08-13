@@ -63,6 +63,35 @@ describe("cards", () => {
     expect(json).toContain("已截断");
   });
 
+  it("answer card exposes dynamic group-context diagnostics", () => {
+    const loaded = cardJson(
+      answerCard(
+        "q",
+        { conclusion: "c" },
+        {
+          repo: "r",
+          durationMs: 1000,
+          turns: 1,
+          groupContext: { status: "loaded", selected: 6, candidates: 20 },
+        },
+      ),
+    );
+    const failed = cardJson(
+      answerCard(
+        "q",
+        { conclusion: "c" },
+        {
+          repo: "r",
+          durationMs: 1000,
+          turns: 1,
+          groupContext: { status: "error", selected: 0, candidates: 0, code: 99991679 },
+        },
+      ),
+    );
+    expect(loaded).toContain("群上下文:6/20 条");
+    expect(failed).toContain("群上下文:不可用(99991679)");
+  });
+
   it("long question is trimmed in title", () => {
     const card = answerCard("很长的问题".repeat(20), { conclusion: "c" }, { repo: "r", durationMs: 0, turns: 0 });
     expect(card.header.title.content.length).toBeLessThanOrEqual(45);

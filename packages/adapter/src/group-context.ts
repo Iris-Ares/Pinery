@@ -11,6 +11,19 @@ export interface RelevantContextOptions {
   totalCharLimit: number;
 }
 
+export interface GroupContextLoadResult {
+  context?: string;
+  status: "skipped" | "loaded" | "empty" | "error";
+  containerType?: "chat" | "thread";
+  pages: number;
+  candidates: number;
+  selected: number;
+  code?: number;
+  httpStatus?: number;
+  errorName?: string;
+  detail?: string;
+}
+
 const DEFAULTS: RelevantContextOptions = {
   pageSize: 50,
   maxPages: 10,
@@ -54,7 +67,18 @@ export async function loadRelevantGroupContext(
   log?: (line: string) => void,
   overrides: Partial<RelevantContextOptions> = {},
 ): Promise<string | undefined> {
-  if (msg.chatType !== "group" || !msg.mentionsBot || !lark.listMessagesPage) return undefined;
+  return (await loadRelevantGroupContextResult(lark, msg, log, overrides)).context;
+}
+
+export async function loadRelevantGroupContextResult(
+  lark: LarkMessenger,
+  msg: IncomingMessage,
+  log?: (line: string) => void,
+  overrides: Partial<RelevantContextOptions> = {},
+): Promise<GroupContextLoadResult> {
+  if (msg.chatType !== "group" || !msg.mentionsBot || !lark.listMessagesPage) {
+    return { status: "skipped", pages: 0, candidates: 0, selected: 0 };
+  }
 
   const options = { ...DEFAULTS, ...overrides };
   const container = msg.threadId
@@ -88,20 +112,20 @@ export async function loadRelevantGroupContext(
       pageToken = page.pageToken;
     }
     const rendered = renderRelevantGroupContext(messages, msg, options);
-    log?.(
-      JSON.stringify({
-        event: "pinery.group_context",
-        status: rendered ? "loaded" : "empty",
-        containerType: container.type,
-        pages,
-        candidates: messages.length,
-        selected: rendered ? selectedMessageCount(rendered) : 0,
-      }),
-    );
-    return rendered;
+    const result: GroupContextLoadResult = {
+      ...(rendered ? { context: rendered } : {}),
+      status: rendered ? "loaded" : "empty",
+      containerType: container.type,
+      pages,
+      candidates: messages.length,
+      selected: rendered ? selectedMessageCount(rendered) : 0,
+    };
+    logGroupContextResult(log, result);
+    return result;
   } catch (error) {
-    log?.(JSON.stringify(groupContextFailure(error, container.type, pages, messages.length)));
-    return undefined;
+    const result = groupContextFailure(error, container.type, pages, messages.length);
+    logGroupContextResult(log, result);
+    return result;
   }
 }
 
@@ -247,7 +271,7 @@ function groupContextFailure(
   containerType: "chat" | "thread",
   pages: number,
   candidates: number,
-): Record<string, unknown> {
+): GroupContextLoadResult {
   const details = error as {
     name?: unknown;
     message?: unknown;
@@ -264,15 +288,24 @@ function groupContextFailure(
       ? details.message.slice(0, 200)
       : undefined;
   return {
-    event: "pinery.group_context",
     status: "error",
     containerType,
     pages,
     candidates,
+    selected: 0,
     errorName:
       typeof details?.name === "string" ? details.name : typeof error,
     ...(code !== undefined ? { code } : {}),
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(detail ? { detail } : {}),
   };
+}
+
+function logGroupContextResult(
+  log: ((line: string) => void) | undefined,
+  result: GroupContextLoadResult,
+): void {
+  if (!log) return;
+  const { context: _context, ...diagnostic } = result;
+  log(JSON.stringify({ event: "pinery.group_context", ...diagnostic }));
 }

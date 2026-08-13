@@ -41,7 +41,9 @@ export { Orchestrator, type LarkMessenger, type OrchestratorDeps } from "./orche
 export { runInvestigationPipeline, type InvestigationDeps } from "./investigation.js";
 export {
   combineInvestigationContext,
+  type GroupContextLoadResult,
   loadRelevantGroupContext,
+  loadRelevantGroupContextResult,
   renderRelevantGroupContext,
   type RelevantContextOptions,
 } from "./group-context.js";

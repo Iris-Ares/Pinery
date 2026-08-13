@@ -49,16 +49,19 @@ export interface GateContext {
   hasActiveSession: boolean;
   /** 活跃话题上次已选择的项目;用户明确点名其他项目时仍以明确意图优先 */
   activeRepo?: string;
+  /** 当前消息直接回复了 Pinery 之前发出的消息 */
+  repliesToBot?: boolean;
 }
 
 const HELP_RE = /^(help|帮助|你能干什么|使用说明)[??!!。.]?$/i;
 const STATUS_RE = /^(status|状态)[??!!。.]?$/i;
 
 export function gate(msg: IncomingMessage, ctx: GateContext): GateDecision {
-  const { cfg, limiter, hasActiveSession } = ctx;
+  const { cfg, limiter } = ctx;
 
-  // 群聊:未 @ 且不在已有会话话题内 → 拒绝旁听(PRD §3.5)
-  if (msg.chatType === "group" && !msg.mentionsBot && !hasActiveSession) {
+  // 群聊只在被 @ 或用户直接回复 Bot 时参与。活跃群会话只用于延续上下文和
+  // 项目选择，不能把群内所有闲聊都吞进 Agent。
+  if (msg.chatType === "group" && !msg.mentionsBot && !ctx.repliesToBot) {
     return { action: "ignore", reason: "group-not-addressed" };
   }
 

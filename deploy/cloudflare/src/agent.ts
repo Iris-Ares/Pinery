@@ -10,9 +10,13 @@ import {
 	helpCard,
 	projectChoiceCard,
 	statusCard,
+	type Card,
 } from "@pinery/adapter/lark/cards";
 import type { IncomingMessage } from "@pinery/adapter/lark/events";
-import { sessionKeyFor } from "@pinery/adapter/sessions";
+import {
+	replyInThreadFor,
+	sessionKeyFor,
+} from "@pinery/adapter/sessions";
 import { Storage } from "@pinery/adapter/storage";
 import {
 	filterSecrets,
@@ -123,7 +127,26 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 					? cfg.workspace.pull_interval_min * 60_000
 					: undefined,
 		});
-		const runner = new WorkersPiRunner({ env: envStrings(this.env) });
+		const runner = new WorkersPiRunner({
+			env: envStrings(this.env),
+			sessionStore: {
+				load: async (runnerRef) => {
+					const row = storage.getRunnerSession(runnerRef);
+					return row ? JSON.parse(row.state_json) : undefined;
+				},
+				save: async (runnerRef, snapshot) =>
+					storage.saveRunnerSession({
+						runnerRef,
+						runnerKind: snapshot.binding.runnerKind,
+						repo: snapshot.binding.repo,
+						workspaceHandle: snapshot.binding.workspaceHandle,
+						workspaceDir: snapshot.binding.workspaceDir,
+						workspaceBranch: snapshot.binding.workspaceBranch ?? undefined,
+						workspaceReadOnly: snapshot.binding.workspaceReadOnly,
+						stateJson: JSON.stringify(snapshot),
+					}),
+			},
+		});
 		const log = (line: string) => console.log(line);
 
 		this.assembled = {
@@ -366,7 +389,7 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 	async handleEvent(
 		input: HandleEventInput,
 	): Promise<{ accepted: boolean; reason?: string }> {
-		const { cfg, storage, limiter, lark } = this.assemble();
+		const { cfg, storage, limiter } = this.assemble();
 		const { eventId, msg } = input;
 		const sql = this.ctx.storage.sql;
 
@@ -407,43 +430,37 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 			limiter,
 			hasActiveSession,
 			activeRepo: hasActiveSession ? (row?.repo ?? pendingRepo) : undefined,
+			repliesToBot: storage.isBotMessage(msg.parentId, msg.chatId),
 		});
-		const inThread = msg.chatType === "group";
 
 		switch (decision.action) {
 			case "ignore":
 				return { accepted: false, reason: decision.reason };
 			case "denied":
 			case "rate_limited":
-				await lark
-					.replyCard(msg.messageId, deniedCard(decision.reply), inThread)
-					.catch(() => {});
+				await this.replyAndRemember(msg, deniedCard(decision.reply)).catch(
+					() => {},
+				);
 				return { accepted: true, reason: decision.action };
 			case "clarify":
-				await lark
-					.replyCard(
-						msg.messageId,
-						projectChoiceCard(decision.projects, decision.reply),
-						inThread,
-					)
-					.catch(() => {});
+				await this.replyAndRemember(
+					msg,
+					projectChoiceCard(decision.projects, decision.reply),
+				).catch(() => {});
 				return { accepted: true, reason: "clarify" };
 			case "help":
-				await lark
-					.replyCard(
-						msg.messageId,
-						helpCard({
-							repo: decision.repo
-								? repoDisplayName(decision.repo)
-								: undefined,
-							levelName: decision.levelName,
-						}),
-						inThread,
-					)
-					.catch(() => {});
+				await this.replyAndRemember(
+					msg,
+					helpCard({
+						repo: decision.repo
+							? repoDisplayName(decision.repo)
+							: undefined,
+						levelName: decision.levelName,
+					}),
+				).catch(() => {});
 				return { accepted: true, reason: "help" };
 			case "status":
-				await this.replyStatus(msg, decision.repo, inThread);
+				await this.replyStatus(msg, decision.repo);
 				return { accepted: true, reason: "status" };
 			case "investigate": {
 				sql.exec(
@@ -506,7 +523,6 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 	 * 提问收敛为明确的错误卡片(而不是让进度卡永远停在「调查中」),清空队列。
 	 */
 	override async onFiberRecovered(): Promise<void> {
-		const { lark } = this.assemble();
 		const sql = this.ctx.storage.sql;
 		const rows = sql
 			.exec<{ id: number; msg: string }>(
@@ -516,16 +532,13 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 		for (const row of rows) {
 			try {
 				const msg = JSON.parse(row.msg) as IncomingMessage;
-				await lark
-					.replyCard(
-						msg.messageId,
-						errorCard(
-							"调查在运行环境重启中被中断,请重新提问。",
-							"会话记忆仍在,重新提问即可延续。",
-						),
-						msg.chatType === "group",
-					)
-					.catch(() => {});
+				await this.replyAndRemember(
+					msg,
+					errorCard(
+						"调查在运行环境重启中被中断,请重新提问。",
+						"会话记忆仍在,重新提问即可延续。",
+					),
+				).catch(() => {});
 			} finally {
 				sql.exec("DELETE FROM pending_msgs WHERE id = ?", row.id);
 			}
@@ -539,26 +552,35 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 		return row?.n ?? 0;
 	}
 
-	private async replyStatus(
-		msg: IncomingMessage,
-		repo: RepoConfig,
-		inThread: boolean,
-	): Promise<void> {
-		const { cfg, storage, lark } = this.assemble();
+	private async replyStatus(msg: IncomingMessage, repo: RepoConfig): Promise<void> {
+		const { cfg, storage } = this.assemble();
 		const row = storage.getSession(sessionKeyFor(msg));
 		// CF 形态:工作区在远端 DO,HEAD 元信息省略(与本地远程后端同款裁剪)
-		await lark
-			.replyCard(
-				msg.messageId,
-				statusCard({
-					repo: repoDisplayName(repo),
-					model: `${cfg.model.provider}/${cfg.model.id}`,
-					sessionTurns: row?.turns,
-					sessionState: row?.state,
-					queueLength: this.pendingCount(),
-				}),
-				inThread,
-			)
-			.catch(() => {});
+		await this.replyAndRemember(
+			msg,
+			statusCard({
+				repo: repoDisplayName(repo),
+				model: `${cfg.model.provider}/${cfg.model.id}`,
+				sessionTurns: row?.turns,
+				sessionState: row?.state,
+				queueLength: this.pendingCount(),
+			}),
+		).catch(() => {});
+	}
+
+	private async replyAndRemember(
+		msg: IncomingMessage,
+		card: Card,
+	): Promise<string | undefined> {
+		const { lark, storage } = this.assemble();
+		const messageId = await lark.replyCard(
+			msg.messageId,
+			card,
+			replyInThreadFor(msg),
+		);
+		if (messageId) {
+			storage.rememberBotMessage(messageId, msg.chatId, sessionKeyFor(msg));
+		}
+		return messageId;
 	}
 }

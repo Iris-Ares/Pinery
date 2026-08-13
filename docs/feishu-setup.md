@@ -26,9 +26,10 @@
 | `im:message:send_as_bot` | 以应用身份发送/更新卡片 | ✅ |
 | `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 | ✅ |
 | `im:message.group_at_msg:readonly` | 读取群内 @ 机器人的消息 | ✅(群聊场景) |
-| `im:message.group_msg:readonly` | 读取群内所有消息 | 可选:话题内追问免 @(需申请,按需) |
+| `im:message.group_msg` | 每次 @ 时分页读取群历史并动态检索相关上下文 | 复杂群聊体验必需(旧版控制台可能显示为 `group_msg:readonly`) |
 
-> 不开 `group_msg:readonly` 时功能仍完整,只是话题内每次追问都要 @ 机器人。
+> 不开群组全部消息权限时仍可被 @ 后回答,但无法在每次 @ 时动态检索此前群聊背景;
+> 后续追问需要再次 @,或直接引用回复 Bot 的上一张卡片。
 
 ## 4. 事件订阅(按部署形态二选一)
 

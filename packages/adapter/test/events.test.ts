@@ -7,6 +7,9 @@ function makeEvent(over: {
   text?: string;
   chatType?: string;
   rootId?: string;
+  threadId?: string;
+  parentId?: string;
+  createTime?: string;
   mentions?: Array<{ key?: string; name?: string; openId?: string }>;
   senderType?: string;
   messageType?: string;
@@ -19,6 +22,9 @@ function makeEvent(over: {
       chat_id: "oc_1",
       chat_type: over.chatType ?? "group",
       root_id: over.rootId,
+      thread_id: over.threadId,
+      parent_id: over.parentId,
+      create_time: over.createTime,
       message_type: over.messageType ?? "text",
       content: over.content ?? JSON.stringify({ text: over.text ?? "hi" }),
       mentions: over.mentions?.map((m) => ({ key: m.key, name: m.name, id: { open_id: m.openId } })),
@@ -56,9 +62,21 @@ describe("normalizeMessage", () => {
     expect(msg?.mentionsBot).toBe(false);
   });
 
-  it("keeps rootId for thread messages", () => {
-    const msg = normalizeMessage(makeEvent({ text: "追问", rootId: "om_root" }), BOT);
+  it("keeps reply and explicit thread topology", () => {
+    const msg = normalizeMessage(
+      makeEvent({
+        text: "追问",
+        rootId: "om_root",
+        threadId: "omt_topic",
+        parentId: "om_parent",
+        createTime: "123",
+      }),
+      BOT,
+    );
     expect(msg?.rootId).toBe("om_root");
+    expect(msg?.threadId).toBe("omt_topic");
+    expect(msg?.parentId).toBe("om_parent");
+    expect(msg?.createTime).toBe("123");
   });
 
   it("ignores bot/app senders (loop protection)", () => {

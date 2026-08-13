@@ -18,7 +18,7 @@ Pinery 在 Cloudflare 上有两种形态,同一个 Worker 同时支持:
 | **HTTPS-only 仓库** | Computer 的 git 是 isomorphic-git,**无 SSH 传输**。仓库 URL 必须是 `https://`;私有仓库用 `https://<token>@host/org/repo.git`(凭据经 Authorization 头传输,不写入 `.git/config`) |
 | **仓库体积** | ~10GB/工作区,浅克隆(depth=1)默认开启;isomorphic-git 解包仍受 DO 内存限制。大型 monorepo 使用下方 R2 只读快照 |
 | **执行后端** | 默认 `worker-shell`(免容器、毫秒级文本命令),够 L0 只读调查;L1 写任务需 container 后端(C3,未实施) |
-| **一期裁剪** | runner 级 resume(每问 fresh+摘要注入)、golden 跨会社导出、群聊话题验收、卡片按钮回调 —— 见架构文档 §9 分期 |
+| **尚未启用** | golden 跨会话导出、卡片按钮回调、L1 可写 worktree/container —— 见架构文档 §9 分期 |
 
 ## 全云形态部署
 
@@ -72,6 +72,9 @@ curl https://pinery-computer.<你的子域>.workers.dev/health
 单项目会直接路由;多项目优先识别名称/`aliases`,无法确定时 Bot 会给出项目选择卡片。
 默认开放 L0 只读咨询;只有需要收紧时才配置 `group_open: false`、
 `p2p_open: false` 或显式 `permissions`。
+群聊每次真正 @ Bot 时都会分页读取飞书历史并动态筛选相关上下文;直接回复 Bot
+则复用同一 runner 会话。Cloudflare 上的 Pi 会话快照持久化在当前 Agent DO SQLite,
+恢复前同时校验 runner、repo、Computer workspace 句柄、branch 与只读级别。
 
 部署后可用 `PINERY_TOKEN` 运行一次固定、只读且有界的真实 Agent 冒烟。该
 入口不接受自定义 prompt:它会让正式 Agent 读取快照 manifest 并通过当前
@@ -117,7 +120,8 @@ curl -X POST https://<worker>.workers.dev/v1/agent/query \
 内存。Cloudflare 形态可把**干净工作树的固定 HEAD**逐文件流式同步到 R2,
 再用可恢复的小批次水合到一个共享 Workspace DO,最后在数据层锁定为
 `EROFS`。所有 L0 会话复用该工作区,仓库内容完整保留,Git 凭据不会进入
-Worker 或模型上下文。
+Worker 或模型上下文。不同聊天的 runner 会话仍分别持久化,并绑定到该不可变
+快照 workspace id;L1 可写 worktree 尚未启用,不与这个共享只读快照混用。
 
 首次创建 bucket 并部署上传入口:
 

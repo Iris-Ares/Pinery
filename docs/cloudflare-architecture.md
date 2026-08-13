@@ -19,8 +19,8 @@
 | 存储 | 本地 SQLite(WAL) | Agent DO SQLite(同一 `Storage` 类与 DDL) |
 | 适用 | 内网仓库、大 monorepo、生产稳态 | 海外 Lark、公开 demo、仓库在 GitHub SaaS、免运维 |
 
-非目标(一期显式裁剪,见 §9):runner 级 resume、golden 跨会话导出、群聊话题验收、
-卡片按钮回调、L1+ 写任务(container 后端)。
+非目标(当前显式裁剪,见 §9):golden 跨会话导出、卡片按钮回调、
+L1+ 写任务(container 后端)。
 
 ## 2. 为什么必须 webhook(长连接在 CF 不可行)
 
@@ -48,16 +48,22 @@
   ▼ PineryAgent DO(handleEvent 只做轻活,<100ms 返回,保住 3s ack 预算)
   event_id 幂等(INSERT OR IGNORE)→ 取消 → gate(鉴权/限流/意图)→ 入 pending
   ▼ Fiber(runFiber:keepAlive 保活;驱逐后 onFiberRecovered 收敛错误卡片)
-  ack 进度卡 → planSession → acquireSession
+  ack 进度卡 → 每次 @ 动态分页检索群历史 + acquireSession → planSession(绑定校验)
     ├─ DirectWorkspaceClient → PineryWorkspace DO(VFS/grep/exec;git 见 §7)
     ├─ WorkersPiRunner(pi loop 就地跑;LLM fetch → AI Gateway)
     └─ 进度节流 patch(1.5s)→ 分层答案卡 patch → audit/qa/session 落库
 ```
 
-- **session_key = `p2p:<chat_id>` / `thread:<root_id>`**,同 key 恒同 DO 实例,
+- **session_key = `p2p:<chat_id>` / `group:<chat_id>` / `thread:<thread_id>`**,
+  群聊主消息流是共享 Agent room,显式话题才隔离;同 key 恒同 DO 实例,
   Orchestrator 的内存队列在 DO 形态整段消失(单线程免费提供串行)。
+- 群聊每次真正 @ Bot 都从飞书分页读取历史,按当前问题、回复链与邻接消息
+  动态筛选;不使用固定“最近 N 条”窗口。用户只直接回复 Bot 时不重复拉取,
+  由已经恢复的 runner 会话承接上下文。
 - 工作区 id 沿用 `s-<repo>-<hash(sessionKey)>`(会话)/`t-<repo>-<task>`(任务),
   与 Agent 实例事实上 1:1(chat→repo 由配置唯一确定)。
+  若配置 `shared_snapshot_id`,L0 物理工作区改为共享不可变快照;runner 会话仍
+  分开持久化并绑定该 workspace id。L1 worktree 不复用共享只读快照。
 - **Agent 与 Workspace 分离为两个 DO 类**(不用官方单 DO 合体):既有 12-op
   线协议层原样复用;`/v1/ws` HTTP 入口继续服务「本地 adapter + CF 工作区」的
   混合形态;L1 任务工作区与 Agent 生命周期不同构;工作区(可整体重建)与
@@ -74,7 +80,7 @@
 | 1 | 事件源 | `(msg)=>void` + `normalizeMessage` 纯函数 | LarkService 长连接 | lark-fetch 验签解密 + `lark-route.ts` |
 | 2 | 出站 Messenger | `LarkMessenger`(adapter/lark/messenger) | LarkService(node-sdk) | `WorkersLarkMessenger`(lark-fetch) |
 | 3 | 存储驱动 | `SqliteDriver` | bun:sqlite / node:sqlite | `doSqliteDriver`(DO SQLite,同为同步 API) |
-| 4 | runner 存储层 | pi 官方 `inMemory()` 工厂 | PiRunner(文件版) | `WorkersPiRunner`(inMemory 四件套 + `registerProvider`) |
+| 4 | runner 存储层 | `RunnerResult.sessionRef` | PiRunner(JSONL 文件) | `WorkersPiRunner`(Pi 上下文快照 → Agent DO SQLite,绑定 workspace/worktree) |
 | 5 | workspace provider | `WorkspaceProvider` | LocalWorkspaceProvider | CfComputerWorkspaceProvider(client 注入) |
 | 6 | workspace 传输 | `WorkspaceRpc { call }` | CfComputerClient(HTTP+Bearer) | `DirectWorkspaceClient`(DO stub 直连) |
 | 7 | 配置加载 | `parseConfig(rawYaml, env)` 纯函数 | loadConfig(readFileSync) | `env.PINERY_CONFIG`(wrangler var)+ secrets 插值 |
@@ -89,9 +95,15 @@ skills 经构建期内联,磁盘读取失败自动回退,见 §6)。
 
 ## 5. 存储模型
 
-Agent DO SQLite 里五张表:`sessions` / `audit_log` / `qa_log`(与本地完全同一
-份 DDL,经 `Storage` 类)+ `lark_events`(event_id 幂等,飞书 at-least-once
-重试 15s/5m/1h/6h,行保留 24h)+ `pending_msgs`(调查队列,fiber 逐条 drain)。
+Agent DO SQLite 里七张业务表:`sessions` / `runner_sessions` / `bot_messages` /
+`audit_log` / `qa_log`(经同一个 `Storage` 类)+ `lark_events`(event_id 幂等,
+飞书 at-least-once 重试 15s/5m/1h/6h,行保留 24h)+ `pending_msgs`(调查队列,
+fiber 逐条 drain);另有 `_pinery_schema_migrations` 记录增量迁移。
+
+- **runner resume 不是摘要续聊**:`runner_sessions.state_json` 保存 Pi 当前已解析
+  对话上下文。恢复前,`sessions` 路由行和 runner 快照都会校验 runner kind、repo、
+  workspace handle、dir、branch、readOnly;任一不一致都拒绝旧 resume。快照缺失
+  可以安全 fresh,绑定错配不能跨工作区降级恢复。
 
 - **幂等去重放 per-DO 而非全局存储**:同 event_id 的重试 payload 相同 →
   session_key 相同 → 必然路由到同一 DO,per-DO 去重即全局完备。
@@ -123,7 +135,9 @@ model:
 **pi SDK 无盘化**(S0a spike 实证,两回合对话在 workerd 内跑通):
 
 - pi-agent-core(loop)与 pi-ai(fetch-based)无硬阻塞;AuthStorage/
-  ModelRegistry/SessionManager/SettingsManager 全用官方 `inMemory()` 工厂。
+  ModelRegistry/SessionManager/SettingsManager 全用官方 `inMemory()` 工厂;
+  每轮结束把 `SessionManager.buildSessionContext()` 的完整消息上下文写入 DO SQL,
+  下一轮重建 SessionManager 后再运行,因此不依赖 workerd 本地文件系统。
 - 桶文件的 TUI 死代码进 bundle 但不执行(生产 bundle ≈3.7MB gzip,限额 10MB);
   两个顶层雷用构建配置排掉:`define: import.meta.url` 常量 + mistral→otel
   幽灵依赖 alias 到空 stub(src/otel-stub.ts)。
@@ -173,9 +187,12 @@ model:
 - **C1(本次)**:L0 只读调查全链路云化 —— webhook 接入、PineryAgent、
   WorkersPiRunner、DirectWorkspaceClient、DO 存储、e2e 模拟器。
   已验收:challenge 回显 / 坏签名 401 / event_id 幂等 / p2p 全链路
-  (真实 clone + pi 两回合 + 分层答案卡)/ 混合形态 `/v1/ws` 回归。
-- **C2**:runner resume(session 载体进 DO SQL)、golden D1 镜像与导出、
-  群聊话题验收、卡片按钮回调(card.action.trigger 已支持 webhook)、
+  (真实 clone + pi 两回合 + 分层答案卡)/ 群聊主流共享 room /
+  混合形态 `/v1/ws` 回归。
+- **C1.1**:群聊每次 @ 动态分页检索相关上下文;runner 完整会话快照进入 DO SQL,
+  并与 sandbox/worktree 身份双重绑定后 resume。
+- **C2**:golden D1 镜像与导出、
+  卡片按钮回调(card.action.trigger 已支持 webhook)、
   status 卡 HEAD 显示(经 exec `git log`)、@cloudflare/vitest-pool-workers
   测试基建(当前 deploy/cloudflare 由 e2e 模拟器覆盖)。
 - **C3(承接 sandbox-evaluation.md §4.4 的 S3)**:L1 写任务 —— container

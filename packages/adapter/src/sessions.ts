@@ -4,14 +4,20 @@ import type { SessionRow, Storage } from "./storage.js";
 
 /**
  * 会话路由(PRD §3.1/§3.4):
- * session_key = 单聊 chat_id | 群聊话题 root_id;同 key 串行。
+ * session_key = 单聊 chat_id | 群聊 chat_id | 显式话题 thread_id;同 key 串行。
+ * 群聊主消息流保持一个共享 room；只有用户主动进入飞书话题时才隔离话题会话。
  * 紧邻追问 resume;空闲超限/轮数超限 → fresh + 注入「上一轮问题与结论」摘要(§8-Q6)。
  */
 
 export function sessionKeyFor(msg: IncomingMessage): string {
   if (msg.chatType === "p2p") return `p2p:${msg.chatId}`;
-  // 话题内消息挂 root;话题首条(主流 @)以自身 message_id 作为未来话题根
-  return `thread:${msg.rootId ?? msg.messageId}`;
+  if (msg.threadId) return `thread:${msg.threadId}`;
+  return `group:${msg.chatId}`;
+}
+
+/** 不主动创建话题；用户已经在显式话题中时才留在该话题。 */
+export function replyInThreadFor(msg: IncomingMessage): boolean {
+  return msg.chatType === "group" && !!msg.threadId;
 }
 
 export interface SessionPlan {
@@ -22,12 +28,23 @@ export interface SessionPlan {
   context?: string;
   /** 之前累计轮数(展示用) */
   priorTurns: number;
+  /** 旧会话存在，但 sandbox/worktree 绑定已变化；本轮必须 fresh。 */
+  bindingChanged?: boolean;
+}
+
+export interface SessionBinding {
+  repo: string;
+  runnerKind: string;
+  workspaceHandle: string;
+  workspaceBranch?: string;
+  workspaceReadOnly: boolean;
 }
 
 export function planSession(
   storage: Storage,
   cfg: PineryConfig,
   msg: IncomingMessage,
+  binding: SessionBinding,
   now = Date.now(),
 ): SessionPlan {
   const sessionKey = sessionKeyFor(msg);
@@ -38,7 +55,14 @@ export function planSession(
   const idle = now - row.updated_at > idleMs;
   const overTurns = row.turns >= cfg.limits.session_max_turns;
 
-  if (row.state === "active" && !idle && !overTurns && row.runner_ref) {
+  const bindingMatches =
+    row.repo === binding.repo &&
+    row.runner_kind === binding.runnerKind &&
+    row.workspace_handle === binding.workspaceHandle &&
+    row.workspace_branch === (binding.workspaceBranch ?? null) &&
+    row.workspace_read_only === (binding.workspaceReadOnly ? 1 : 0);
+
+  if (row.state === "active" && !idle && !overTurns && row.runner_ref && bindingMatches) {
     return { sessionKey, resume: row.runner_ref, priorTurns: row.turns };
   }
 
@@ -47,6 +71,7 @@ export function planSession(
     sessionKey,
     context: row.summary ?? undefined,
     priorTurns: 0,
+    ...(row.runner_ref && !bindingMatches ? { bindingChanged: true } : {}),
   };
 }
 

@@ -137,4 +137,43 @@ describe("LarkFetchClient", () => {
     const client = new LarkFetchClient({ appId: "a", appSecret: "s", fetchImpl: impl });
     expect(await client.botInfo()).toEqual({ openId: "ou_bot", name: "Pinery" });
   });
+
+  it("lists a paginated chat history with sender names", async () => {
+    const { impl, calls } = fakeFetch([
+      { body: TOKEN_OK },
+      {
+        body: {
+          code: 0,
+          data: {
+            has_more: true,
+            page_token: "next-page",
+            items: [
+              {
+                message_id: "om_1",
+                msg_type: "text",
+                sender: { id: "ou_1", sender_type: "user", sender_name: "Alice" },
+                body: { content: JSON.stringify({ text: "hello" }) },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const client = new LarkFetchClient({ appId: "a", appSecret: "s", fetchImpl: impl });
+
+    const page = await client.listMessagesPage(
+      { type: "chat", id: "oc_1" },
+      { pageSize: 999, pageToken: "previous-page" },
+    );
+
+    expect(page.items[0]?.message_id).toBe("om_1");
+    expect(page).toMatchObject({ hasMore: true, pageToken: "next-page" });
+    const url = new URL(calls[1]!.url);
+    expect(url.searchParams.get("container_id_type")).toBe("chat");
+    expect(url.searchParams.get("container_id")).toBe("oc_1");
+    expect(url.searchParams.get("sort_type")).toBe("ByCreateTimeDesc");
+    expect(url.searchParams.get("page_size")).toBe("50");
+    expect(url.searchParams.get("page_token")).toBe("previous-page");
+    expect(url.searchParams.get("with_sender_name")).toBe("true");
+  });
 });

@@ -25,6 +25,11 @@ export interface RunnerTask {
 export interface RunnerWorkspace {
   /** repo 名(pinery.yaml 中的 name) */
   repo: string;
+  /**
+   * provider 分配的稳定工作区身份。runner 级 resume 必须与该身份绑定，
+   * 防止把一个沙箱/worktree 的会话历史恢复到另一个工作区。
+   */
+  handle?: string;
   /** agent 的工作目录(L0 共享 checkout / L1+ 独立 worktree) */
   dir: string;
   /** true 时 runner 必须以只读工具集运行 */

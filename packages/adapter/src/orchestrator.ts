@@ -20,7 +20,7 @@ import {
 import type { IncomingMessage } from "./lark/events.js";
 import type { LarkMessenger } from "./lark/messenger.js";
 import { headInfo } from "./repo-sync.js";
-import { sessionKeyFor } from "./sessions.js";
+import { replyInThreadFor, sessionKeyFor } from "./sessions.js";
 import type { Storage } from "./storage.js";
 
 // 接口本体已迁至 lark/messenger.ts(CF 形态复用);原位 re-export 保持兼容
@@ -70,7 +70,7 @@ export class Orchestrator {
       void this.safeReply(
         msg,
         errorCard(`调查未能启动:存储不可用(${detail})`, "请让管理员检查数据目录权限与磁盘空间。"),
-        msg.chatType === "group",
+        replyInThreadFor(msg),
       );
     }
   }
@@ -96,8 +96,9 @@ export class Orchestrator {
       limiter: this.limiter,
       hasActiveSession,
       activeRepo: hasActiveSession ? (row?.repo ?? this.routeRepos.get(sessionKey)) : undefined,
+      repliesToBot: storage.isBotMessage(msg.parentId, msg.chatId),
     });
-    const inThread = msg.chatType === "group";
+    const inThread = replyInThreadFor(msg);
 
     switch (decision.action) {
       case "ignore":
@@ -202,7 +203,11 @@ export class Orchestrator {
 
   private async safeReply(msg: IncomingMessage, card: Card, inThread: boolean): Promise<string | undefined> {
     try {
-      return await this.deps.lark.replyCard(msg.messageId, card, inThread);
+      const messageId = await this.deps.lark.replyCard(msg.messageId, card, inThread);
+      if (messageId) {
+        this.deps.storage.rememberBotMessage(messageId, msg.chatId, sessionKeyFor(msg));
+      }
+      return messageId;
     } catch (e) {
       this.log(`[orchestrator] 回复失败:${e instanceof Error ? e.message : String(e)}`);
       return undefined;

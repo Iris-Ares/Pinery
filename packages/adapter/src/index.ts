@@ -1,4 +1,10 @@
-export { Storage, type AuditEntry, type QaRow, type SessionRow } from "./storage.js";
+export {
+  Storage,
+  type AuditEntry,
+  type QaRow,
+  type RunnerSessionRow,
+  type SessionRow,
+} from "./storage.js";
 export {
   answerCard,
   cardJson,
@@ -26,11 +32,19 @@ export {
   buildSessionSummary,
   isSessionActive,
   planSession,
+  replyInThreadFor,
   sessionKeyFor,
+  type SessionBinding,
   type SessionPlan,
 } from "./sessions.js";
 export { Orchestrator, type LarkMessenger, type OrchestratorDeps } from "./orchestrator.js";
 export { runInvestigationPipeline, type InvestigationDeps } from "./investigation.js";
+export {
+  combineInvestigationContext,
+  loadRelevantGroupContext,
+  renderRelevantGroupContext,
+  type RelevantContextOptions,
+} from "./group-context.js";
 export { ensureCheckout, headInfo, pullCheckout, startPullLoop } from "./repo-sync.js";
 export { createRunner } from "./runner-factory.js";
 export { createWorkspaceProvider } from "./workspace/factory.js";

@@ -145,7 +145,7 @@ base_url / api / headers overrides declaratively generate pi's `models.json` reg
 ```mermaid
 flowchart TD
     FS["📡 Feishu event subscription<br/>long connection · no public callback"] --> GW["🚪 Gateway<br/>intent gate · rate limit · user × repo × level auth"]
-    GW --> SR["🧵 Session routing<br/>session_key = DM chat_id / group thread root_id (serialized per key)"]
+    GW --> SR["💬 Session routing<br/>DM chat_id / group chat_id / explicit thread_id (serialized per key)"]
     SR --> RUN
     subgraph RUN["🤖 AgentRunner — narrow interface · replaceable (default: pi SDK)"]
         direction LR
@@ -161,6 +161,7 @@ Design principles (full decision record in PRD v0.2, "self-interrogation" sectio
 
 - **The AgentRunner narrow interface is a first-class citizen**: pi is an implementation detail, not the product's identity — community harnesses like `runner-claude-code` are welcome (switch via `runner.kind`).
 - **WorkspaceProvider is symmetrically replaceable**: the workspace backend is also a narrow interface — local worktrees and cloud sandboxes (Cloudflare Computer) share the same policy engine and session model; switching is just `workspace.provider`.
+- **Main-flow-first group chat**: the bot joins only when mentioned or directly replied to. On every mention it paginates Feishu history and ranks context by the current question, reply lineage, and neighboring messages, so older relevant discussion is not lost to a fixed recent-message window. Plain replies reuse the bound runner session; the bot stays in a topic only when the user already chose one.
 - **The reply channel is funneled through the adapter**: the agent has no message-sending tool; lark-cli only reads Feishu docs.
 - **Feishu cards only authorize execution** — code review stays entirely on your Git platform. Pinery doesn't try to replace any part of it; it only delivers tasks into it.
 - **Glossary cold-start is automated**: `pinery bootstrap` has the agent scan the repo and draft a glossary; engineers only review and correct.
@@ -213,7 +214,7 @@ In-conversation commands: `help` usage · `status` repo & session state · `取�
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **M1** | Docker + adapter + runner-pi (L0) + single repo + thread sessions + layered cards + bootstrap | ✅ Code-complete; acceptance = "question → trustworthy answer" on our own projects |
+| **M1** | Docker + adapter + runner-pi (L0) + single repo + continuous group sessions + layered cards + bootstrap | ✅ Code-complete; acceptance = "question → trustworthy answer" on our own projects |
 | **M2** | L1 coding tasks (worktree + test execution) + multi-turn hardening + 20-question blind eval | 🚧 Next (non-technical rollout gated on the blind eval) |
 | **M3** | L2 PR loop + full group-chat support + lark-cli / PRD cross-checks + file-level dependency cache | 📋 Planned |
 | **M4** | Eval loop + curated FAQ + multi-repo + trajectory pages + open-source launch | 📋 Planned |

@@ -12,4 +12,9 @@ export {
   type ParsedLarkWebhook,
 } from "./webhook.js";
 export { LarkApiError, TenantTokenManager, larkApiBase, type LarkDomain, type TenantTokenManagerOptions } from "./token.js";
-export { LarkFetchClient, type LarkFetchClientOptions } from "./client.js";
+export {
+  LarkFetchClient,
+  type LarkFetchClientOptions,
+  type LarkMessageItem,
+  type LarkMessagePage,
+} from "./client.js";

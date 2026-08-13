@@ -1,6 +1,13 @@
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { WorkersPiRunner, registerModelOverrides, resolveHeaderValues } from "../src/workers-runner.js";
+import {
+  parseWorkersPiSessionSnapshot,
+  registerModelOverrides,
+  resolveHeaderValues,
+  restoreWorkersPiSession,
+  WorkersPiRunner,
+  workersPiWorkspaceBinding,
+} from "../src/workers-runner.js";
 
 /**
  * WorkersPiRunner 的无盘装配逻辑(注册三态 + env 解析 + 早期失败路径)。
@@ -58,6 +65,74 @@ describe("resolveHeaderValues", () => {
       resolveHeaderValues({ "cf-aig-authorization": "CF_AIG_HEADER", "x-static": "literal" }, { CF_AIG_HEADER: "Bearer x" }),
     ).toEqual({ "cf-aig-authorization": "Bearer x", "x-static": "literal" });
     expect(resolveHeaderValues(undefined, {})).toBeUndefined();
+  });
+});
+
+describe("WorkersPiRunner durable resume", () => {
+  it("round-trips the resolved Pi conversation and workspace binding", () => {
+    const source = SessionManager.inMemory("/workspace");
+    source.appendMessage({ role: "user", content: "remember this", timestamp: 1 });
+    const binding = workersPiWorkspaceBinding({
+      handle: "s-demo-chat",
+      repo: "demo",
+      dir: "/workspace",
+      readOnly: true,
+      branch: "main",
+    });
+    const raw = JSON.parse(
+      JSON.stringify({
+        version: 1,
+        binding,
+        messages: source.buildSessionContext().messages,
+        updatedAt: 2,
+      }),
+    );
+    const snapshot = parseWorkersPiSessionSnapshot(raw);
+    expect(snapshot?.binding.workspaceHandle).toBe("s-demo-chat");
+    expect(restoreWorkersPiSession(snapshot!, "/workspace").buildSessionContext().messages).toMatchObject([
+      { role: "user", content: "remember this" },
+    ]);
+  });
+
+  it("continues appending after a restored turn instead of replacing history", () => {
+    const binding = workersPiWorkspaceBinding({
+      handle: "s-demo-chat",
+      repo: "demo",
+      dir: "/workspace",
+      readOnly: true,
+    });
+    const first = SessionManager.inMemory("/workspace");
+    first.appendMessage({ role: "user", content: "first turn", timestamp: 1 });
+    const restored = restoreWorkersPiSession(
+      {
+        version: 1,
+        binding,
+        messages: first.buildSessionContext().messages,
+        updatedAt: 2,
+      },
+      "/workspace",
+    );
+    restored.appendMessage({ role: "user", content: "second turn", timestamp: 3 });
+    const restoredAgain = restoreWorkersPiSession(
+      {
+        version: 1,
+        binding,
+        messages: restored.buildSessionContext().messages,
+        updatedAt: 4,
+      },
+      "/workspace",
+    );
+    expect(restoredAgain.buildSessionContext().messages).toMatchObject([
+      { role: "user", content: "first turn" },
+      { role: "user", content: "second turn" },
+    ]);
+  });
+
+  it("rejects malformed snapshots and workspaces without a stable handle", () => {
+    expect(parseWorkersPiSessionSnapshot({ version: 1, messages: [] })).toBeUndefined();
+    expect(() => workersPiWorkspaceBinding({ repo: "demo", dir: "/workspace", readOnly: true })).toThrow(
+      /workspace.handle/,
+    );
   });
 });
 

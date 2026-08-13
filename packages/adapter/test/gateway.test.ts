@@ -50,9 +50,16 @@ describe("gate", () => {
     expect(gate(msg({ mentionsBot: false }), ctx()).action).toBe("ignore");
   });
 
-  it("continues thread without mention when session active", () => {
-    const d = gate(msg({ mentionsBot: false, rootId: "om_root" }), ctx({ hasActiveSession: true }));
+  it("continues without mention only when directly replying to the bot", () => {
+    const d = gate(
+      msg({ mentionsBot: false, parentId: "om_bot" }),
+      { ...ctx({ hasActiveSession: true }), repliesToBot: true },
+    );
     expect(d.action).toBe("investigate");
+  });
+
+  it("does not consume unrelated chatter just because the group session is active", () => {
+    expect(gate(msg({ mentionsBot: false }), ctx({ hasActiveSession: true })).action).toBe("ignore");
   });
 
   it("allows an unregistered group to use the only project", () => {

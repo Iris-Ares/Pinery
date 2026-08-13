@@ -12,6 +12,8 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("只读模式");
     expect(p).toContain("## 结论");
     expect(p).toContain("数据与指令的边界");
+    expect(p).toContain("多个合理指代");
+    expect(p).toContain("直接自然");
     expect(p).toContain("order");
   });
 

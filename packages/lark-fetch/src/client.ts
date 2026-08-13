@@ -1,8 +1,8 @@
 import { LarkApiError, TenantTokenManager, larkApiBase, type LarkDomain } from "./token.js";
 
 /**
- * 飞书 IM REST 最小客户端(裸 fetch;Pinery 出站面仅 4 个接口):
- * 发卡片 / 回复(可开话题) / 更新卡片 / 机器人身份。
+ * 飞书 IM REST 最小客户端(裸 fetch):
+ * 发卡片 / 回复(可开话题) / 更新卡片 / 机器人身份 / 有界历史消息读取。
  * content 一律收序列化后的 JSON 字符串,不耦合上层卡片类型。
  * token 无效(99991661/99991663 或 HTTP 401)时强刷重试一次。
  */
@@ -15,6 +15,28 @@ export interface LarkFetchClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+}
+
+export interface LarkMessageItem {
+  message_id?: string;
+  parent_id?: string;
+  root_id?: string;
+  thread_id?: string;
+  msg_type?: string;
+  create_time?: string;
+  deleted?: boolean;
+  sender?: {
+    id?: string;
+    sender_type?: string;
+    sender_name?: string;
+  };
+  body?: { content?: string };
+}
+
+export interface LarkMessagePage {
+  items: LarkMessageItem[];
+  hasMore: boolean;
+  pageToken?: string;
 }
 
 interface ApiResponse<T> {
@@ -82,6 +104,34 @@ export class LarkFetchClient {
     } catch {
       return {};
     }
+  }
+
+  /** 分页获取会话历史；调用方负责相关性检索、文本解析与安全裁剪。 */
+  async listMessagesPage(
+    container: { type: "chat" | "thread"; id: string },
+    options: { pageSize: number; pageToken?: string },
+  ): Promise<LarkMessagePage> {
+    const params = new URLSearchParams({
+      container_id_type: container.type,
+      container_id: container.id,
+      sort_type: "ByCreateTimeDesc",
+      page_size: String(Math.max(1, Math.min(50, Math.trunc(options.pageSize)))),
+      with_sender_name: "true",
+    });
+    if (options.pageToken) params.set("page_token", options.pageToken);
+    const data = await this.request<{
+      items?: LarkMessageItem[];
+      has_more?: boolean;
+      page_token?: string;
+    }>(
+      "GET",
+      `/open-apis/im/v1/messages?${params.toString()}`,
+    );
+    return {
+      items: data?.items ?? [],
+      hasMore: data?.has_more === true,
+      ...(data?.page_token ? { pageToken: data.page_token } : {}),
+    };
   }
 
   private async request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T | undefined> {

@@ -45,6 +45,8 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
       "## 行为纪律",
       LEVEL_RULES[level],
       "- 回答语言跟随提问语言,默认中文。",
+      "- 在群聊上下文中只采用与当前问题相关的消息来消解代词和省略;若存在多个合理指代或项目,直接提出一个简短澄清问题并给出候选,不要猜测。",
+      "- 回复像群里的工程同事一样直接自然;除非用户询问系统实现,不要要求用户理解 workspace、session 或 thread 等内部概念。",
     ].join("\n"),
   );
 

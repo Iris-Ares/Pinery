@@ -12,9 +12,10 @@ import {
   type WorkspaceProvider,
 } from "@pinery/core";
 import { answerCard, errorCard, progressCard, timeoutCard, toolLine, type Card } from "./lark/cards.js";
+import { combineInvestigationContext, loadRelevantGroupContext } from "./group-context.js";
 import type { IncomingMessage } from "./lark/events.js";
 import type { LarkMessenger } from "./lark/messenger.js";
-import { buildSessionSummary, planSession, sessionKeyFor } from "./sessions.js";
+import { buildSessionSummary, planSession, replyInThreadFor, sessionKeyFor } from "./sessions.js";
 import type { Storage } from "./storage.js";
 
 /** 进度卡片最小 patch 间隔 */
@@ -63,7 +64,7 @@ export async function runInvestigationPipeline(
   const sessionKey = sessionKeyFor(msg);
   const taskId = globalThis.crypto.randomUUID();
   const startedAt = Date.now();
-  const inThread = msg.chatType === "group";
+  const inThread = replyInThreadFor(msg);
 
   const ackId = await safeReply(deps, msg, progressCard({ lines: [], elapsedSec: 0 }), inThread);
   if (!ackId) {
@@ -71,12 +72,10 @@ export async function runInvestigationPipeline(
     return;
   }
 
-  // ack 之后的一切都必须能收敛卡片:这里的存储读写(会话规划、审计)
+  // ack 之后的一切都必须能收敛卡片:这里的存储读写(审计、运行登记)
   // 在库满/只读/已关闭时会抛,不接住就只剩队列日志,卡片停在「调查中」。
-  let plan: ReturnType<typeof planSession>;
   const abort = new AbortController();
   try {
-    plan = planSession(storage, cfg, msg);
     deps.running.set(sessionKey, abort);
     storage.audit({
       sessionKey,
@@ -122,10 +121,19 @@ export async function runInvestigationPipeline(
   // 获取本身可能失败(远端不可达、clone 失败),必须收敛卡片与任务状态,
   // 否则进度卡片会永远停在「调查中」。
   let workspace: ProvidedWorkspace;
+  let groupContext: string | undefined;
   try {
-    workspace = deps.workspaces
-      ? await deps.workspaces.acquireSession(repo, sessionKey)
-      : { handle: `session:${sessionKey}`, repo: repo.name, dir: repoCheckoutDir(cfg, repo), readOnly: true };
+    [workspace, groupContext] = await Promise.all([
+      deps.workspaces
+        ? deps.workspaces.acquireSession(repo, sessionKey)
+        : Promise.resolve({
+            handle: `session:${sessionKey}`,
+            repo: repo.name,
+            dir: repoCheckoutDir(cfg, repo),
+            readOnly: true,
+          }),
+      loadRelevantGroupContext(lark, msg, log),
+    ]);
   } catch (e) {
     if (patchTimer) clearTimeout(patchTimer);
     deps.running.delete(sessionKey);
@@ -137,6 +145,33 @@ export async function runInvestigationPipeline(
     return;
   }
 
+  let plan: ReturnType<typeof planSession>;
+  try {
+    plan = planSession(storage, cfg, msg, {
+      repo: repo.name,
+      runnerKind: runner.kind,
+      workspaceHandle: workspace.handle,
+      workspaceBranch: workspace.branch,
+      workspaceReadOnly: workspace.readOnly,
+    });
+    if (plan.bindingChanged) {
+      log(
+        `[investigation] 会话 ${sessionKey} 的 sandbox/worktree 绑定已变化，拒绝旧 resume 并安全 fresh`,
+      );
+    }
+  } catch (e) {
+    deps.running.delete(sessionKey);
+    await deps.workspaces?.release(workspace).catch(() => {});
+    const detail = filterSecrets(e instanceof Error ? e.message : String(e)).text;
+    await lark
+      .patchCard(ackId, errorCard(`调查未能启动:会话状态不可用(${detail})`, "请让管理员检查持久化存储。"))
+      .catch(() => {});
+    storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: `session: ${detail}` });
+    return;
+  }
+
+  const taskContext = combineInvestigationContext(plan.context, groupContext);
+
   const checkoutDir = workspace.dir;
   let result: Awaited<ReturnType<AgentRunner["run"]>>;
   try {
@@ -145,7 +180,7 @@ export async function runInvestigationPipeline(
         id: taskId,
         kind: "investigate",
         prompt: question,
-        context: plan.context,
+        context: taskContext,
         resume: plan.resume,
       },
       workspace,
@@ -300,6 +335,10 @@ export async function runInvestigationPipeline(
     chatType: msg.chatType,
     repo: repo.name,
     runnerRef: result.sessionRef,
+    runnerKind: runner.kind,
+    workspaceHandle: workspace.handle,
+    workspaceBranch: workspace.branch,
+    workspaceReadOnly: workspace.readOnly,
     summary: filterSecrets(buildSessionSummary(question, layered.conclusion)).text,
     turns: plan.priorTurns + result.turns,
   });
@@ -312,7 +351,9 @@ async function safeReply(
   inThread: boolean,
 ): Promise<string | undefined> {
   try {
-    return await deps.lark.replyCard(msg.messageId, card, inThread);
+    const messageId = await deps.lark.replyCard(msg.messageId, card, inThread);
+    if (messageId) deps.storage.rememberBotMessage(messageId, msg.chatId, sessionKeyFor(msg));
+    return messageId;
   } catch (e) {
     deps.log?.(`[investigation] 回复失败:${e instanceof Error ? e.message : String(e)}`);
     return undefined;

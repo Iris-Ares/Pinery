@@ -30,8 +30,8 @@ export interface CfComputerProviderOptions extends Omit<CfComputerClientOptions,
   client?: WorkspaceRpc;
   /** exec 后端 id:worker-shell(免容器,快)| container(真 Linux) */
   execBackend?: string;
-  /** 已水合的只读快照 workspace id;设置后所有 L0 会话共享它 */
-  sharedSnapshotId?: string;
+  /** repo name → 已水合的只读快照 workspace id */
+  sharedSnapshots?: Readonly<Record<string, string>>;
   /** clone 深度(0 = 完整克隆);默认 1 */
   cloneDepth?: number;
   execTimeoutMs?: number;
@@ -55,8 +55,23 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   private readonly preparing = new Map<string, Promise<void>>();
 
   constructor(private readonly options: CfComputerProviderOptions) {
-    if (options.sharedSnapshotId && !/^s-[A-Za-z0-9._-]{1,126}$/.test(options.sharedSnapshotId)) {
-      throw new Error("sharedSnapshotId 必须以 s- 开头,且只含安全字符(最长 128)");
+    const workspaceOwners = new Map<string, string>();
+    for (const [repo, workspaceId] of Object.entries(options.sharedSnapshots ?? {})) {
+      if (!repo) throw new Error("sharedSnapshots 中的 repo name 不得为空");
+      if (!/^s-[A-Za-z0-9._-]{1,126}$/.test(workspaceId)) {
+        throw new Error(`repo ${repo} 的 snapshot_id 必须以 s- 开头,且只含安全字符(最长 128)`);
+      }
+      const existing = workspaceOwners.get(workspaceId);
+      if (existing && existing !== repo) {
+        throw new Error(`snapshot workspace ${workspaceId} 同时绑定了 repo ${existing} 与 ${repo}`);
+      }
+      workspaceOwners.set(workspaceId, repo);
+    }
+    if (workspaceOwners.size > 1) {
+      throw new Error(
+        "一个 Cloudflare Worker 部署当前只支持一个共享快照;" +
+          "其余仓库必须使用各自的普通会话工作区",
+      );
     }
     if (options.client) {
       this.client = options.client;
@@ -69,7 +84,8 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   }
 
   acquireSession(repo: RepoConfig, sessionKey: string): Promise<ProvidedWorkspace> {
-    return this.acquire(repo, this.options.sharedSnapshotId ?? `s-${workspaceSlug(repo.name)}-${hashId(sessionKey)}`, true);
+    const snapshotId = this.options.sharedSnapshots?.[repo.name];
+    return this.acquire(repo, snapshotId ?? `s-${workspaceSlug(repo.name)}-${hashId(sessionKey)}`, true);
   }
 
   acquireTask(repo: RepoConfig, taskId: string): Promise<ProvidedWorkspace> {
@@ -186,10 +202,51 @@ export function createWorkspaceProvider(cfg: PineryConfig): WorkspaceProvider {
     endpoint,
     token,
     execBackend: o["exec_backend"] ?? "worker-shell",
-    sharedSnapshotId: o["shared_snapshot_id"],
+    sharedSnapshots: sharedSnapshotsFromConfig(cfg),
     cloneDepth: o["clone_depth"] ? Number(o["clone_depth"]) : 1,
     execTimeoutMs: o["exec_timeout_ms"] ? Number(o["exec_timeout_ms"]) : undefined,
     // 远程后端不跑本地 pull loop,刷新节奏沿用同一个配置项
     refreshIntervalMs: cfg.workspace.pull_interval_min > 0 ? cfg.workspace.pull_interval_min * 60_000 : undefined,
   });
+}
+
+/**
+ * 生成按仓库绑定的快照表。Worker 当前只有一组 PINERY_SOURCE_* 快照元数据,
+ * 因此一个部署最多启用一个仓库快照;同一配置中的其他仓库仍使用普通会话工作区。
+ * 旧版 workspace.options.shared_snapshot_id 仅在单仓库配置中兼容。
+ */
+export function sharedSnapshotsFromConfig(cfg: PineryConfig): Record<string, string> {
+  const result: Record<string, string> = {};
+  const legacy = cfg.workspace.options["shared_snapshot_id"];
+  if (legacy) {
+    if (cfg.repos.length !== 1) {
+      throw new Error(
+        "workspace.options.shared_snapshot_id 只允许单仓库配置;" +
+          "多仓库请将 snapshot_id 分别写在 repos[] 中",
+      );
+    }
+    result[cfg.repos[0]!.name] = legacy;
+  }
+
+  const workspaceOwners = new Map<string, string>();
+  for (const repo of cfg.repos) {
+    const workspaceId = repo.snapshot_id ?? result[repo.name];
+    if (!workspaceId) continue;
+    if (!/^s-[A-Za-z0-9._-]{1,126}$/.test(workspaceId)) {
+      throw new Error(`repo ${repo.name} 的 snapshot_id 必须以 s- 开头,且只含安全字符(最长 128)`);
+    }
+    const owner = workspaceOwners.get(workspaceId);
+    if (owner && owner !== repo.name) {
+      throw new Error(`snapshot workspace ${workspaceId} 同时绑定了 repo ${owner} 与 ${repo.name}`);
+    }
+    workspaceOwners.set(workspaceId, repo.name);
+    result[repo.name] = workspaceId;
+  }
+  if (workspaceOwners.size > 1) {
+    throw new Error(
+      "一个 Cloudflare Worker 部署当前只支持一个 repos[].snapshot_id;" +
+        "其余仓库必须使用各自的普通会话工作区",
+    );
+  }
+  return result;
 }

@@ -16,6 +16,8 @@ export interface PineryWorkerEnv {
   PINERY_CONFIG?: string;
   /** 固定 R2 快照前缀;Agent 冒烟从末段取得预期 commit */
   PINERY_SOURCE_PREFIX?: string;
+  /** 固定 R2 快照所属的共享 Workspace 名称 */
+  PINERY_SOURCE_WORKSPACE?: string;
   [key: string]: unknown;
 }
 

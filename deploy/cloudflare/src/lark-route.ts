@@ -5,6 +5,11 @@ import type { PineryConfig } from "@pinery/core";
 import { getAgentByName } from "agents";
 import type { PineryAgent } from "./agent.js";
 import { loadWorkerConfig, type PineryWorkerEnv } from "./config.js";
+import {
+  BodyTooLargeError,
+  InvalidContentLengthError,
+  readBoundedRequestText,
+} from "./bounded-body.js";
 
 /**
  * 飞书 webhook 入口(POST /lark/events):
@@ -18,6 +23,7 @@ let cachedCfg: PineryConfig | undefined;
 /** isolate 级 bot 身份缓存(识别 @ 提及;10 分钟 TTL) */
 let botCache: { value: { openId?: string; name?: string }; at: number } | undefined;
 const BOT_TTL_MS = 10 * 60_000;
+const LARK_EVENT_MAX_BODY_BYTES = 1024 * 1024;
 
 function workerConfig(env: PineryWorkerEnv): PineryConfig {
   cachedCfg ??= loadWorkerConfig(env);
@@ -47,7 +53,14 @@ export async function handleLarkEvents(request: Request, env: PineryWorkerEnv): 
   const encryptKey = cfg.lark.encrypt_key;
   if (!encryptKey) return new Response("lark.encrypt_key 未配置", { status: 500 });
 
-  const raw = await request.text();
+  let raw: string;
+  try {
+    raw = await readBoundedRequestText(request, LARK_EVENT_MAX_BODY_BYTES);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return new Response("request body too large", { status: 413 });
+    if (error instanceof InvalidContentLengthError) return new Response("invalid Content-Length", { status: 400 });
+    throw error;
+  }
   const parsed = await parseWebhookBody(raw, encryptKey);
 
   if (parsed.kind === "challenge") {

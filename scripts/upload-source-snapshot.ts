@@ -1,10 +1,40 @@
 #!/usr/bin/env bun
 
-import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-interface Args {
+// Keep the uploader wire constants self-contained: scripts is a separate TS
+// project, while the strict parser/reader lives in the Worker bundle.
+const SNAPSHOT_VERSION = 2 as const;
+const MAX_SNAPSHOT_CHUNK_BYTES = 8 * 1024 * 1024;
+
+interface SourceSnapshotChunk {
+  key: string;
+  size: number;
+  sha256: string;
+}
+
+interface SourceSnapshotFileManifest {
+  version: typeof SNAPSHOT_VERSION;
+  path: string;
+  mode: "100644" | "100755";
+  size: number;
+  oid: string;
+  chunks: SourceSnapshotChunk[];
+}
+
+interface SourceSnapshotManifest {
+  version: typeof SNAPSHOT_VERSION;
+  repo: string;
+  commit: string;
+  fileCount: number;
+  totalBytes: number;
+  createdAt: string;
+}
+
+export interface Args {
   endpoint: string;
   repo: string;
   prefix: string;
@@ -14,8 +44,9 @@ interface Args {
   skipUpload: boolean;
 }
 
-interface TrackedFile {
+export interface TrackedFile {
   mode: string;
+  oid: string;
   path: string;
   size: number;
 }
@@ -70,7 +101,7 @@ function git(repo: string, args: string[]): string {
   return result.stdout;
 }
 
-function trackedFiles(repo: string): TrackedFile[] {
+export function trackedFiles(repo: string): TrackedFile[] {
   const records = git(repo, ["ls-tree", "-rz", "-l", "--full-tree", "HEAD"]).split("\0").filter(Boolean);
   return records.map((record) => {
     const tab = record.indexOf("\t");
@@ -78,13 +109,14 @@ function trackedFiles(repo: string): TrackedFile[] {
     const metadata = record.slice(0, tab).split(/\s+/);
     const mode = metadata[0];
     const type = metadata[1];
+    const oid = metadata[2];
     const size = Number(metadata[3]);
     const path = record.slice(tab + 1);
-    if (!mode || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || !path) {
+    if (!mode || type !== "blob" || !oid || !/^[0-9a-f]{40,64}$/i.test(oid) || !Number.isSafeInteger(size) || size < 0 || !path) {
       fail(`unsupported git entry: ${record.slice(0, 120)}`);
     }
     if (mode !== "100644" && mode !== "100755") fail(`unsupported git mode ${mode}: ${path}`);
-    return { mode, path, size };
+    return { mode, oid, path, size };
   });
 }
 
@@ -108,6 +140,92 @@ async function upload(endpoint: string, token: string, key: string, body: Uint8A
     }
     await new Promise((done) => setTimeout(done, 500 * 2 ** (attempt - 1)));
   }
+}
+
+function jsonBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function sha256(value: Uint8Array | string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export async function uploadGitBlob(
+  args: Args,
+  token: string,
+  file: TrackedFile,
+  uploadObject: typeof upload = upload,
+): Promise<SourceSnapshotFileManifest> {
+  const child = spawn("git", ["-C", args.repo, "cat-file", "blob", file.oid], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const exitPromise = new Promise<number>((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolveExit(code ?? 1));
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    if (stderr.length < 64 * 1024) stderr += chunk;
+  });
+  const chunks: SourceSnapshotChunk[] = [];
+  const buffered: Uint8Array[] = [];
+  let bufferedBytes = 0;
+  let totalBytes = 0;
+  const pathHash = sha256(file.path);
+
+  const flush = async (): Promise<void> => {
+    if (bufferedBytes === 0) return;
+    const content = new Uint8Array(bufferedBytes);
+    let offset = 0;
+    for (const part of buffered) {
+      content.set(part, offset);
+      offset += part.byteLength;
+    }
+    buffered.length = 0;
+    bufferedBytes = 0;
+    const key = `${args.prefix}.pinery/chunks/${pathHash}/${String(chunks.length).padStart(8, "0")}`;
+    const digest = sha256(content);
+    await uploadObject(args.endpoint, token, key, content);
+    chunks.push({ key, size: content.byteLength, sha256: digest });
+  };
+
+  for await (const raw of child.stdout) {
+      const value = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+      let offset = 0;
+      totalBytes += value.byteLength;
+      while (offset < value.byteLength) {
+        const take = Math.min(MAX_SNAPSHOT_CHUNK_BYTES - bufferedBytes, value.byteLength - offset);
+        buffered.push(value.slice(offset, offset + take));
+        bufferedBytes += take;
+        offset += take;
+        if (bufferedBytes === MAX_SNAPSHOT_CHUNK_BYTES) await flush();
+      }
+  }
+  await flush();
+
+  const exitCode = await exitPromise;
+  if (exitCode !== 0) {
+    const detail = stderr.trim();
+    fail(detail || `git cat-file blob ${file.oid} failed`);
+  }
+  if (totalBytes !== file.size) fail(`git object size mismatch for ${file.path}`);
+
+  const manifest: SourceSnapshotFileManifest = {
+    version: SNAPSHOT_VERSION,
+    path: file.path,
+    mode: file.mode as SourceSnapshotFileManifest["mode"],
+    size: file.size,
+    oid: file.oid,
+    chunks,
+  };
+  await uploadObject(
+    args.endpoint,
+    token,
+    `${args.prefix}.pinery/files/${pathHash}.json`,
+    jsonBytes(manifest),
+  );
+  return manifest;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -177,32 +295,22 @@ async function main(): Promise<void> {
         const index = next++;
         const file = files[index];
         if (!file) return;
-        const absolutePath = resolve(args.repo, file.path);
-        if (absolutePath !== args.repo && !absolutePath.startsWith(`${args.repo}/`)) fail(`path escaped repo: ${file.path}`);
-        const content = await readFile(absolutePath);
-        if (content.byteLength !== file.size) fail(`size changed while reading ${file.path}`);
-        await upload(args.endpoint, token, `${args.prefix}${file.path}`, content);
+        await uploadGitBlob(args, token, file);
         completed += 1;
         if (completed % 100 === 0 || completed === files.length) console.log(`Uploaded ${completed}/${files.length}`);
       }
     });
     await Promise.all(workers);
 
-    const manifest = new TextEncoder().encode(
-      `${JSON.stringify(
-        {
-          version: 1,
-          repo: args.repoUrl,
-          commit,
-          fileCount: files.length,
-          totalBytes,
-          createdAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    await upload(args.endpoint, token, `${args.prefix}.pinery-snapshot.json`, manifest);
+    const manifest: SourceSnapshotManifest = {
+      version: SNAPSHOT_VERSION,
+      repo: args.repoUrl,
+      commit,
+      fileCount: files.length,
+      totalBytes,
+      createdAt: new Date().toISOString(),
+    };
+    await upload(args.endpoint, token, `${args.prefix}.pinery-snapshot.json`, jsonBytes(manifest));
     console.log(`Snapshot ready: ${args.prefix} (${commit})`);
   } else {
     console.log(`Reusing uploaded snapshot: ${args.prefix} (${commit})`);
@@ -212,4 +320,6 @@ async function main(): Promise<void> {
   console.log(`Workspace hydrated: ${args.workspace}`);
 }
 
-void main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void main();
+}

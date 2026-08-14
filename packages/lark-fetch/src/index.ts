@@ -18,3 +18,13 @@ export {
   type LarkMessageItem,
   type LarkMessagePage,
 } from "./client.js";
+export {
+  LarkDocumentService,
+  extractLarkDocumentRefs,
+  parseLarkDocumentRef,
+  type LarkDocumentCitation,
+  type LarkDocumentKind,
+  type LarkDocumentReadResult,
+  type LarkDocumentRef,
+  type LarkDocumentScope,
+} from "./document.js";

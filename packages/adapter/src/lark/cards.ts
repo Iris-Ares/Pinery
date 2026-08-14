@@ -182,6 +182,7 @@ export function helpCard(info: { repo?: string; levelName?: string }): Card {
     "- 直接提问,例如:「下单超时会自动退款吗?」",
     "- 群里 @ 我提问,回复会收敛到话题;话题内追问无需再 @",
     "- `status` 查看当前项目与会话状态",
+    "- 在问题中附 docx/wiki 链接可读取文档;L1+ 的 `/doc create|append|replace` 会先请求二次确认",
     "",
     info.repo
       ? `当前项目:\`${info.repo}\``
@@ -208,4 +209,41 @@ export function statusCard(info: StatusInfo): Card {
     `**队列** ${info.queueLength} 个任务排队中`,
   ];
   return baseCard("📊 状态", "blue", [md(lines.join("\n"))]);
+}
+
+export function documentConfirmationCard(info: {
+  code: string;
+  operation: "create" | "append" | "replace";
+  target: string;
+  preview: string;
+  baseRevision: number;
+  expiresInMin: number;
+}): Card {
+  const operation = { create: "创建文档", append: "追加内容", replace: "精确替换" }[info.operation];
+  return baseCard("📝 等待确认文档写入", "orange", [
+    md(
+      [
+        `**操作** ${operation}`,
+        `**目标** ${info.target}`,
+        `**基准修订** ${info.baseRevision}`,
+        "",
+        "**预览**",
+        info.preview,
+        "",
+        `请在 ${info.expiresInMin} 分钟内回复 \`确认 ${info.code}\` 或 \`取消 ${info.code}\`。`,
+        "未回复、超时或文档修订号变化时均不会写入。",
+      ].join("\n"),
+    ),
+  ]);
+}
+
+export function documentResultCard(info: {
+  ok: boolean;
+  title: string;
+  detail: string;
+  url?: string;
+}): Card {
+  return baseCard(info.ok ? `✅ ${info.title}` : `❌ ${info.title}`, info.ok ? "green" : "red", [
+    md(`${info.detail}${info.url ? `\n\n[打开文档](${info.url})` : ""}`),
+  ]);
 }

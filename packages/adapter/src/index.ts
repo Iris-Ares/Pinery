@@ -38,6 +38,11 @@ export {
   type SessionPlan,
 } from "./sessions.js";
 export { Orchestrator, type LarkMessenger, type OrchestratorDeps } from "./orchestrator.js";
+export {
+  DocumentActionController,
+  parseDocumentInteraction,
+  type DocumentInteraction,
+} from "./document-actions.js";
 export { runInvestigationPipeline, type InvestigationDeps } from "./investigation.js";
 export {
   combineInvestigationContext,

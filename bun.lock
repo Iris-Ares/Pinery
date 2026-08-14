@@ -39,6 +39,7 @@
         "@clack/prompts": "^1.0.0",
         "@larksuiteoapi/node-sdk": "^1.72.0",
         "@pinery/core": "workspace:*",
+        "@pinery/lark-fetch": "workspace:*",
         "@pinery/runner-pi": "workspace:*",
         "@pinery/skills": "workspace:*",
         "commander": "^15.0.0",

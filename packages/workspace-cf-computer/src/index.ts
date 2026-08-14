@@ -3,6 +3,7 @@ export { createRemoteOperations, type RemoteOperationsOptions } from "./operatio
 export {
   CfComputerWorkspaceProvider,
   createWorkspaceProvider,
+  sharedSnapshotsFromConfig,
   type CfComputerProviderOptions,
 } from "./provider.js";
 export {

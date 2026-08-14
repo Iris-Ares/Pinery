@@ -11,6 +11,7 @@ repos:
   - name: order-service             # 标识名(字母数字与 ._-)
     aliases: [订单, order]          # 可选:聊天里可用的项目简称;多项目意图路由使用
     url: git@github.com:org/order.git   # 建议只读 deploy key 的 ssh 地址
+    # snapshot_id: s-order-abc123    # CF R2 快照专用;多仓库必须一仓一 workspace
     # path: /srv/repos/order        # 可选:已有本地 checkout 时指定;缺省自动 clone 到 <workspace.root>/repos/<name>
     # chats: [oc_xxxxxxxxxxxxxxxx]  # 可选:把群设为该项目的默认路由提示,不是访问白名单
     # permissions:                  # 可选:为指定用户提升或固定能力级别(open_id)
@@ -60,9 +61,13 @@ model:
 limits:
   session_max_turns: 20             # 单会话轮数预算,超限 fresh + 注入摘要(PRD §3.4)
   task_timeout_min: 30              # 单任务超时强杀
+  synthesis_reserve_sec: 30         # 硬超时前停止新探索、收敛答案的预留时间
   session_idle_archive_min: 240     # 话题空闲封存窗口
   max_concurrent_tasks: 2           # 全局并发(同一话题永远串行)
   answer_max_chars: 3500            # 卡片体积上限(超出截断)
+  document_read_max_chars: 12000    # 本轮外部 docx/wiki 注入的总字符上限
+  document_write_max_chars: 20000   # 单次受控文档写入上限
+  document_confirmation_timeout_min: 10 # 文档写入确认码有效期
   rate_per_user_per_min: 6          # 每用户限流
 
 workspace:

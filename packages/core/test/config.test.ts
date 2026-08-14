@@ -34,7 +34,9 @@ describe("parseConfig", () => {
     expect(cfg.repos[0]!.name).toBe("order-service");
     expect(cfg.repos[0]!.aliases).toEqual([]);
     expect(cfg.repos[0]!.group_open).toBe(true);
+    expect(cfg.repos[0]!.snapshot_id).toBeUndefined();
     expect(cfg.limits.session_max_turns).toBe(20);
+    expect(cfg.limits.synthesis_reserve_sec).toBe(30);
     expect(cfg.runner.kind).toBe("pi");
     expect(cfg.workspace.root).toBe("~/.pinery");
   });
@@ -50,6 +52,14 @@ describe("parseConfig", () => {
   it("rejects illegal repo names", () => {
     const bad = BASE_YAML.replace("order-service", "../evil");
     expect(() => parseConfig(bad, env)).toThrowError(ConfigError);
+  });
+
+  it("validates repository-scoped snapshot workspace ids", () => {
+    const valid = parseConfig(BASE_YAML.replace("url: git@github.com:org/order.git", "url: https://example.com/order.git\n    snapshot_id: s-order-main"), env);
+    expect(valid.repos[0]!.snapshot_id).toBe("s-order-main");
+
+    const invalid = BASE_YAML.replace("url: git@github.com:org/order.git", "url: https://example.com/order.git\n    snapshot_id: t-not-a-snapshot");
+    expect(() => parseConfig(invalid, env)).toThrowError(/snapshot_id/);
   });
 });
 

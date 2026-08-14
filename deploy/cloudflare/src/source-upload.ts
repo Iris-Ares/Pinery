@@ -1,5 +1,11 @@
+import {
+  BodyTooLargeError,
+  InvalidContentLengthError,
+  boundedRequestBody,
+} from "./bounded-body.js";
+
 const SOURCE_ROUTE = "/v1/source/";
-const MAX_SOURCE_OBJECT_BYTES = 10 * 1024 * 1024;
+export const MAX_SOURCE_OBJECT_BYTES = 10 * 1024 * 1024;
 
 export function isSourceUploadPath(pathname: string): boolean {
   return pathname.startsWith(SOURCE_ROUTE);
@@ -35,14 +41,28 @@ export async function handleSourceUpload(request: Request, bucket: R2Bucket): Pr
   const key = sourceObjectKey(new URL(request.url).pathname);
   if (!key) return response({ ok: false, error: "非法的 source object key" }, 400);
 
-  const contentLength = request.headers.get("content-length");
-  const size = contentLength === null ? undefined : Number(contentLength);
-  if (size !== undefined && (!Number.isSafeInteger(size) || size < 0 || size > MAX_SOURCE_OBJECT_BYTES)) {
-    return response({ ok: false, error: `单文件不得超过 ${MAX_SOURCE_OBJECT_BYTES} bytes` }, 413);
+  let body: ReadableStream<Uint8Array> | null;
+  try {
+    body = boundedRequestBody(request, MAX_SOURCE_OBJECT_BYTES);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      return response({ ok: false, error: `单个 source object 不得超过 ${MAX_SOURCE_OBJECT_BYTES} bytes` }, 413);
+    }
+    if (error instanceof InvalidContentLengthError) {
+      return response({ ok: false, error: "Content-Length 必须是非负整数" }, 400);
+    }
+    throw error;
   }
-  if (!request.body) return response({ ok: false, error: "缺少文件内容" }, 400);
+  if (!body) return response({ ok: false, error: "缺少文件内容" }, 400);
 
   const contentType = request.headers.get("content-type") ?? "application/octet-stream";
-  const object = await bucket.put(key, request.body, { httpMetadata: { contentType } });
-  return response({ ok: true, key, size: object?.size ?? size ?? null }, 200);
+  try {
+    const object = await bucket.put(key, body, { httpMetadata: { contentType } });
+    return response({ ok: true, key, size: object?.size ?? null }, 200);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      return response({ ok: false, error: `单个 source object 不得超过 ${MAX_SOURCE_OBJECT_BYTES} bytes` }, 413);
+    }
+    throw error;
+  }
 }

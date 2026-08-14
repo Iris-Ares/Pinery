@@ -6,7 +6,10 @@ import {
   type RepoConfig,
   type AgentRunner,
   type WorkspaceProvider,
+  resolveUserLevel,
 } from "@pinery/core";
+import type { LarkDocumentService } from "@pinery/lark-fetch";
+import { DocumentActionController, parseDocumentInteraction } from "./document-actions.js";
 import { RateLimiter, gate } from "./gateway.js";
 import { CANCEL_RE, runInvestigationPipeline } from "./investigation.js";
 import {
@@ -31,6 +34,7 @@ export interface OrchestratorDeps {
   storage: Storage;
   runner: AgentRunner;
   lark: LarkMessenger;
+  documents?: LarkDocumentService;
   /** 工作区后端(缺省 local);云沙箱后端按 WorkspaceProvider 接口替换 */
   workspaces?: WorkspaceProvider;
   log?: (line: string) => void;
@@ -88,6 +92,32 @@ export class Orchestrator {
     // 取消命令:直接中断该会话正在跑的任务
     if (CANCEL_RE.test(msg.text.trim()) && this.running.has(sessionKey)) {
       this.running.get(sessionKey)!.abort();
+      return;
+    }
+
+    const documentInteraction = parseDocumentInteraction(msg.text);
+    if (documentInteraction) {
+      const repliesToBot = storage.isBotMessage(msg.parentId, msg.chatId);
+      if (msg.chatType === "group" && !msg.mentionsBot && !repliesToBot) return;
+      const allowed = cfg.repos.some(
+        (repo) => {
+          const level = resolveUserLevel(repo, msg.senderOpenId, msg.chatType, repo.chats.includes(msg.chatId));
+          return level !== undefined && level >= 1;
+        },
+      );
+      if (!allowed) {
+        void this.safeReply(msg, deniedCard("文档写入需要至少 L1 权限,请联系管理员。"), replyInThreadFor(msg));
+        return;
+      }
+      if (!this.limiter.allow(msg.senderOpenId)) {
+        void this.safeReply(msg, deniedCard("操作太频繁了,请一分钟后再试。"), replyInThreadFor(msg));
+        return;
+      }
+      if (!this.deps.documents) {
+        void this.safeReply(msg, errorCard("飞书文档能力未装配。"), replyInThreadFor(msg));
+        return;
+      }
+      this.enqueue(sessionKey, () => this.runDocumentAction(msg, documentInteraction));
       return;
     }
 
@@ -177,6 +207,24 @@ export class Orchestrator {
   private runInvestigation(msg: IncomingMessage, repo: RepoConfig, question: string): Promise<void> {
     // 本地形态注入 git 子进程版 headInfo;流水线本体与 CF 形态共用
     return runInvestigationPipeline({ ...this.deps, running: this.running, headInfo }, msg, repo, question);
+  }
+
+  private runDocumentAction(
+    msg: IncomingMessage,
+    interaction: NonNullable<ReturnType<typeof parseDocumentInteraction>>,
+  ): Promise<void> {
+    const documents = this.deps.documents;
+    if (!documents) return Promise.resolve();
+    const controller = new DocumentActionController({
+      storage: this.deps.storage,
+      documents,
+      domain: this.deps.cfg.lark.endpoint,
+      maxWriteChars: this.deps.cfg.limits.document_write_max_chars,
+      confirmationTimeoutMin: this.deps.cfg.limits.document_confirmation_timeout_min,
+      reply: (card) => this.safeReply(msg, card, replyInThreadFor(msg)),
+      log: (line) => this.log(line),
+    });
+    return controller.handle(msg, interaction);
   }
 
   private async replyStatus(msg: IncomingMessage, repo: RepoConfig, inThread: boolean): Promise<void> {

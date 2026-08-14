@@ -31,6 +31,19 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("禁止 push");
   });
 
+  it("states the hard budget and synthesis reserve", () => {
+    const p = buildSystemPrompt({
+      repoName: "order",
+      level: 0,
+      kind: "investigate",
+      workspaceDir: ws(),
+      budget: { maxTurns: 12, timeoutMs: 120_000, synthesisReserveMs: 30_000 },
+    });
+    expect(p).toContain("12 轮 / 120 秒");
+    expect(p).toContain("剩余 30 秒");
+    expect(p).toContain("停止新的工具探索");
+  });
+
   it("injects glossary when present in workspace .pinery/", () => {
     const dir = ws();
     mkdirSync(join(dir, ".pinery"), { recursive: true });

@@ -53,6 +53,7 @@
 - 🧩 **双窄接口可替换** — AgentRunner 与 WorkspaceProvider 皆是窄接口,pi 只是默认实现,harness 与工作区后端都欢迎社区替代
 - 🛡️ **纵深安全** — 工具白名单、路径围栏、secret 出站过滤、egress 白名单代理、审计落库
 - 📋 **答案可审计** — 依据到文件:行号、附置信度的分层卡片;每次工具调用与问答留痕(golden set)
+- 📝 **飞书文档是一等输入** — docx/wiki 有界读取与 block 引用;创建/追加/精确替换必须经同用户卡片确认和 revision 复核
 
 ## 🎚️ 能力分级
 
@@ -170,7 +171,7 @@ flowchart TD
 - **AgentRunner 窄接口是一等公民**:pi 是实现细节不是产品身份,欢迎社区实现 `runner-claude-code` 等替代 harness(配置 `runner.kind` 即可切换)。
 - **WorkspaceProvider 同构可替换**:工作区后端也是窄接口——本地 worktree 与云沙箱(Cloudflare Computer)共用同一套策略引擎与会话模型,切换只改 `workspace.provider`。
 - **群聊主流优先**:Bot 仅在被 @ 或用户直接回复 Bot 时参与;每次被 @ 都分页拉取飞书历史,按当前问题、回复链与邻接消息动态筛选上下文,旧但相关的讨论不会被固定“最近 N 条”窗口丢掉。普通回复沿用已绑定 runner 会话;只有用户已经进入显式话题时才留在话题内。
-- **回复通道收口在 adapter**:agent 没有发消息的工具;lark-cli 只读飞书文档。
+- **回复与文档写入通道收口在 adapter**:agent 没有发消息或写文档的工具;文档写入只能经确定性命令、持久化确认与 revision 校验带外执行。
 - **飞书卡片只做执行授权**,code review 完全留在 Git 平台——Pinery 不试图取代 Git 平台的任何环节,只负责把任务送进去。
 - **glossary 冷启动自动化**:`pinery bootstrap` 让 agent 自扫仓库生成术语表草稿,工程师只 review 修正。
 
@@ -204,6 +205,7 @@ pinery/
 | `pinery golden list/mark/export` | 问答标注与导出(评估闭环的地基,每问自动留痕) |
 
 会话内指令:`help` 使用说明 · `status` 仓库与会话状态 · `取消` 中断当前调查。
+飞书文档读取与受控写入命令见 [docs/lark-documents.md](docs/lark-documents.md)。
 
 ## 🔐 安全模型(摘要)
 

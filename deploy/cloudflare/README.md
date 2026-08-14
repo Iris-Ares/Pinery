@@ -64,6 +64,32 @@ bunx wrangler deploy
 curl https://pinery-computer.<你的子域>.workers.dev/health
 ```
 
+### Dashboard 资源对照(它不是业务验收)
+
+`wrangler deploy` 成功后,先核对本次 deployment 与 binding,再跑下方
+端到端检查。Dashboard 中“看到了资源”只证明控制面配置存在,
+不证明模型、工作区、飞书凭据或 webhook 真正可用。
+
+| Dashboard / Wrangler 中的资源 | 本项目应有的配置 | 什么时候才会有运行证据 |
+|---|---|---|
+| Worker | `pinery-computer`,entrypoint `src/worker.ts` | `/health` 或任一路由被请求后 |
+| Durable Objects | `AGENT` → `PineryAgent`;`WORKSPACE` → `PineryWorkspace` | 分别在真实 Agent 请求、工作区 RPC/水合后 |
+| Agents 页 / traces | `PineryAgent` 由 Agents SDK 导出,observability + traces 已启用 | 至少一次请求路由到 Agent DO 后;空页不能单独用于判定部署失败 |
+| R2 | binding `PINERY_SOURCES` → bucket `pinery-sources` | 执行 source upload/hydrate 后才有 objects |
+| Worker Loader | binding `LOADER` | `worker-shell` 工具真正执行后;它不一定以独立可点击资源展示 |
+| AI Gateway(可选) | `model.base_url` 指向的 gateway | 真实模型调用后才有请求记录 |
+
+建议保留部署证据:
+
+```bash
+bunx wrangler deployments list
+bunx wrangler tail
+```
+
+`wrangler deploy` 输出中的 bindings 必须与上表一致;若使用自定义域名,
+还要分别记录 `workers.dev` 与自定义域名的 `/health` 结果,避免把 DNS/
+路由问题与 Worker 本身混在一起。
+
 飞书后台「事件与回调」→ 订阅方式选 **「将事件发送至开发者服务器」**,
 请求网址 `https://<worker>/lark/events`,订阅 `im.message.receive_v1`;
 「加密策略」启用 **Encrypt Key**。逐步截图见 [docs/feishu-setup.md](../../docs/feishu-setup.md)。
@@ -75,6 +101,14 @@ curl https://pinery-computer.<你的子域>.workers.dev/health
 群聊每次真正 @ Bot 时都会分页读取飞书历史并动态筛选相关上下文;直接回复 Bot
 则复用同一 runner 会话。Cloudflare 上的 Pi 会话快照持久化在当前 Agent DO SQLite,
 恢复前同时校验 runner、repo、Computer workspace 句柄、branch 与只读级别。
+
+按以下顺序验收,每一层只代表它自己的证据:
+
+1. `/health`:Worker 路由可达。
+2. `/v1/lark/check`:租户 token 与机器人身份可解析。
+3. `/v1/agent/smoke`:Agent DO、模型、Computer 工作区和固定 manifest 读取同时可用。
+4. `/v1/agent/query`:自定义真实代码问题能完成工具调查。
+5. 飞书真实消息:challenge、事件验签/解密、路由、进度卡与最终卡全部通过。
 
 部署后可用 `PINERY_TOKEN` 运行一次固定、只读且有界的真实 Agent 冒烟。该
 入口不接受自定义 prompt:它会让正式 Agent 读取快照 manifest 并通过当前
@@ -117,11 +151,15 @@ curl -X POST https://<worker>.workers.dev/v1/agent/query \
 ### 大仓库:R2 只读快照
 
 大型仓库的浅克隆仍可能在 isomorphic-git 解包 pack 时超过 Durable Object
-内存。Cloudflare 形态可把**干净工作树的固定 HEAD**逐文件流式同步到 R2,
+内存。Cloudflare 形态可把**固定 HEAD 的 Git blob**分块流式同步到 R2,
 再用可恢复的小批次水合到一个共享 Workspace DO,最后在数据层锁定为
 `EROFS`。所有 L0 会话复用该工作区,仓库内容完整保留,Git 凭据不会进入
 Worker 或模型上下文。不同聊天的 runner 会话仍分别持久化,并绑定到该不可变
 快照 workspace id;L1 可写 worktree 尚未启用,不与这个共享只读快照混用。
+
+快照格式 v2 对每个文件保留 Git mode/oid,内容按 8 MiB 分块并记录
+SHA-256。水合端对每块 checksum、文件长度、总文件数与总字节数全部校验,
+并恢复 `100755` 执行位;任一对象缺失/损坏时都不会写入 ready marker。
 
 首次创建 bucket 并部署上传入口:
 
@@ -154,9 +192,20 @@ PINERY_TOKEN="$PINERY_TOKEN" bun run source:upload -- \
 bunx wrangler secret put PINERY_SOURCE_READY        # 与 PINERY_SOURCE_WORKSPACE 同值
 ```
 
-启用后,`repos[].url` 使用无凭据 URL,`workspace.options.shared_snapshot_id`
-必须与 `PINERY_SOURCE_WORKSPACE` 一致。快照按 commit 不可变;更新代码时
-使用新 prefix + 新 workspace id 重复步骤,最后再切换 `shared_snapshot_id`。
+启用后,`repos[].url` 使用无凭据 URL,并把同一 workspace id 写到该
+仓库自己的 `repos[].snapshot_id`:
+
+```yaml
+repos:
+  - name: order-service
+    url: https://github.com/org/order-service.git
+    snapshot_id: s-order-service-<short-sha>
+```
+
+多仓库必须一仓一个 snapshot workspace,重复绑定会拒绝启动。旧的
+`workspace.options.shared_snapshot_id` 只兼容单仓库配置。快照按 commit
+不可变;更新代码时使用新 prefix + 新 workspace id 重复步骤,最后再切换
+该仓库的 `snapshot_id`。
 
 ### 本地端到端(无需真实飞书)
 

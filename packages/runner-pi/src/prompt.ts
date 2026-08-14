@@ -9,6 +9,7 @@ export interface SystemPromptInput {
   workspaceDir: string;
   branch?: string;
   repositoryGuidance?: RepositoryGuidance;
+  budget?: { maxTurns: number; timeoutMs: number; synthesisReserveMs: number };
 }
 
 const LEVEL_RULES: Record<PermissionLevel, string> = {
@@ -66,6 +67,22 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
   if (repositoryGuidance) {
     const rendered = renderRepositoryGuidance(repositoryGuidance);
     if (rendered) parts.push(rendered);
+  }
+
+  if (input.budget) {
+    const timeoutSec = Math.max(1, Math.floor(input.budget.timeoutMs / 1000));
+    const reserveSec = Math.max(0, Math.floor(input.budget.synthesisReserveMs / 1000));
+    parts.push(
+      [
+        "## 执行预算",
+        "",
+        `- 硬上限:${input.budget.maxTurns} 轮 / ${timeoutSec} 秒。`,
+        reserveSec > 0
+          ? `- 最晚在剩余 ${reserveSec} 秒时停止新的工具探索,收敛已有证据并生成答案。`
+          : "- 软收敛提醒已关闭;仍必须在硬上限内输出。",
+        "- 证据不足时优先输出已确认结论与未确认项,不要为了看起来完整而继续扩大调查面。",
+      ].join("\n"),
+    );
   }
 
   parts.push(

@@ -61,9 +61,45 @@ export interface AuditEntry {
   taskId?: string;
   userId?: string;
   repo?: string;
-  kind: "task_start" | "tool_start" | "tool_end" | "policy_block" | "task_end" | "error" | "delivery";
+  kind:
+    | "task_start"
+    | "tool_start"
+    | "tool_end"
+    | "policy_block"
+    | "task_end"
+    | "error"
+    | "delivery"
+    | "document_prepare"
+    | "document_execute"
+    | "document_cancel";
   tool?: string;
   detail?: string;
+}
+
+export type DocumentActionStatus =
+  | "pending"
+  | "executing"
+  | "completed"
+  | "cancelled"
+  | "expired"
+  | "failed";
+
+export interface DocumentActionRow {
+  id: string;
+  code: string;
+  session_key: string;
+  chat_id: string;
+  user_id: string;
+  operation: "create" | "append" | "replace";
+  target_token: string | null;
+  target_url: string | null;
+  payload_json: string;
+  base_revision: number;
+  status: DocumentActionStatus;
+  expires_at: number;
+  result_json: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export class Storage {
@@ -164,6 +200,24 @@ export class Storage {
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS document_actions (
+        id            TEXT PRIMARY KEY,
+        code          TEXT NOT NULL UNIQUE,
+        session_key   TEXT NOT NULL,
+        chat_id       TEXT NOT NULL,
+        user_id       TEXT NOT NULL,
+        operation     TEXT NOT NULL,
+        target_token  TEXT,
+        target_url    TEXT,
+        payload_json  TEXT NOT NULL,
+        base_revision INTEGER NOT NULL,
+        status        TEXT NOT NULL,
+        expires_at    INTEGER NOT NULL,
+        result_json   TEXT,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_document_actions_expiry ON document_actions(status, expires_at);
     `);
 
     // DO SQLite 不支持 PRAGMA user_version；用普通迁移表记录版本。全新库的
@@ -326,6 +380,89 @@ export class Storage {
       .prepare("SELECT 1 AS found FROM bot_messages WHERE message_id = ? AND chat_id = ?")
       .get(messageId, chatId) as { found?: number } | undefined;
     return row?.found === 1;
+  }
+
+  // -- controlled document actions ---------------------------------------
+
+  createDocumentAction(row: {
+    id: string;
+    code: string;
+    sessionKey: string;
+    chatId: string;
+    userId: string;
+    operation: DocumentActionRow["operation"];
+    targetToken?: string;
+    targetUrl?: string;
+    payloadJson: string;
+    baseRevision: number;
+    expiresAt: number;
+  }): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO document_actions (
+          id, code, session_key, chat_id, user_id, operation, target_token,
+          target_url, payload_json, base_revision, status, expires_at,
+          result_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, ?, ?)`,
+      )
+      .run(
+        row.id,
+        row.code,
+        row.sessionKey,
+        row.chatId,
+        row.userId,
+        row.operation,
+        row.targetToken ?? null,
+        row.targetUrl ?? null,
+        row.payloadJson,
+        row.baseRevision,
+        row.expiresAt,
+        now,
+        now,
+      );
+  }
+
+  getDocumentActionByCode(code: string): DocumentActionRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM document_actions WHERE code = ?")
+      .get(code) as unknown as DocumentActionRow | undefined;
+    return row ?? undefined;
+  }
+
+  claimDocumentAction(id: string, now = Date.now()): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE document_actions SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'pending' AND expires_at >= ?",
+      )
+      .run(now, id, now);
+    return Number(result.changes) === 1;
+  }
+
+  cancelDocumentAction(id: string): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE document_actions SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'pending'",
+      )
+      .run(Date.now(), id);
+    return Number(result.changes) === 1;
+  }
+
+  finishDocumentAction(id: string, status: "completed" | "failed" | "expired", result?: unknown): void {
+    this.db
+      .prepare(
+        "UPDATE document_actions SET status = ?, result_json = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'executing')",
+      )
+      .run(status, result === undefined ? null : JSON.stringify(result), Date.now(), id);
+  }
+
+  expireDocumentActions(now = Date.now()): number {
+    const result = this.db
+      .prepare(
+        "UPDATE document_actions SET status = 'expired', updated_at = ? WHERE status = 'pending' AND expires_at < ?",
+      )
+      .run(now, now);
+    return Number(result.changes);
   }
 
   // -- audit ---------------------------------------------------------------

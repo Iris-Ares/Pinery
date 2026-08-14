@@ -19,6 +19,7 @@ import {
 	type RunnerWorkspace,
 } from "@pinery/core";
 import { isBuiltinProvider, ModelConfigError } from "./models-json.js";
+import { SYNTHESIS_STEER_MESSAGE, startSynthesisReserveTimer } from "./budget.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { loadRepositoryGuidance } from "./repository-guidance.js";
 import {
@@ -82,6 +83,7 @@ export class WorkersPiRunner implements AgentRunner {
 		workspace: RunnerWorkspace,
 		opts: RunnerRunOptions,
 	): Promise<RunnerResult> {
+		const runStartedAt = Date.now();
 		const env = this.options.env;
 		const modelCfg: RunnerModelConfig = {
 			provider: "openrouter",
@@ -129,6 +131,9 @@ export class WorkersPiRunner implements AgentRunner {
 		let toolCalls = 0;
 		let turns = 0;
 		let aborted: RunnerAbortReason | undefined;
+		let toolMs = 0;
+		const toolStartedAt = new Map<string, number>();
+		const synthesisReserveMs = opts.synthesisReserveMs ?? 30_000;
 		let workspaceBinding: WorkersPiWorkspaceBinding | undefined;
 		if (this.options.sessionStore) {
 			try {
@@ -152,6 +157,11 @@ export class WorkersPiRunner implements AgentRunner {
 			workspaceDir: workspace.dir,
 			branch: workspace.branch,
 			repositoryGuidance,
+			budget: {
+				maxTurns: opts.maxTurns,
+				timeoutMs: opts.timeoutMs,
+				synthesisReserveMs,
+			},
 		});
 
 		const resourceLoader = new DefaultResourceLoader({
@@ -229,6 +239,7 @@ export class WorkersPiRunner implements AgentRunner {
 				}
 				case "tool_execution_start": {
 					toolCalls++;
+					toolStartedAt.set(event.toolCallId, Date.now());
 					const touched = extractTouchedFile(event.toolName, event.args);
 					if (touched) filesTouched.add(touched);
 					opts.onEvent?.({
@@ -239,6 +250,11 @@ export class WorkersPiRunner implements AgentRunner {
 					break;
 				}
 				case "tool_execution_end": {
+					const startedAt = toolStartedAt.get(event.toolCallId);
+					if (startedAt !== undefined) {
+						toolMs += Date.now() - startedAt;
+						toolStartedAt.delete(event.toolCallId);
+					}
 					const detail = event.isError
 						? summarizeToolError(event.result)
 						: undefined;
@@ -301,12 +317,26 @@ export class WorkersPiRunner implements AgentRunner {
 			}
 		});
 
+		const remainingTimeoutMs = Math.max(
+			0,
+			opts.timeoutMs - (Date.now() - runStartedAt),
+		);
 		const timeoutTimer = setTimeout(() => {
 			if (!aborted) {
 				aborted = "timeout";
 				void session.abort();
 			}
-		}, opts.timeoutMs);
+		}, remainingTimeoutMs);
+		const synthesisTimer = startSynthesisReserveTimer(
+			remainingTimeoutMs,
+			synthesisReserveMs,
+			() => {
+				if (aborted) return;
+				opts.onEvent?.({ type: "note", text: "正在收敛已找到的证据…" });
+				void session.steer(SYNTHESIS_STEER_MESSAGE).catch(() => undefined);
+			},
+		);
+		const promptStartedAt = Date.now();
 		const onExternalAbort = () => {
 			if (!aborted) {
 				aborted = "user";
@@ -329,8 +359,10 @@ export class WorkersPiRunner implements AgentRunner {
 			promptError = e instanceof Error ? e.message : String(e);
 		} finally {
 			clearTimeout(timeoutTimer);
+			if (synthesisTimer) clearTimeout(synthesisTimer);
 			opts.signal?.removeEventListener("abort", onExternalAbort);
 		}
+		const promptFinishedAt = Date.now();
 
 		const answer = session.getLastAssistantText() ?? "";
 		const stats = session.getSessionStats();
@@ -348,6 +380,16 @@ export class WorkersPiRunner implements AgentRunner {
 				persistenceError = `runner 会话持久化失败:${error instanceof Error ? error.message : String(error)}`;
 			}
 		}
+		const finishedAt = Date.now();
+		for (const startedAt of toolStartedAt.values()) toolMs += finishedAt - startedAt;
+		const totalMs = finishedAt - runStartedAt;
+		const setupMs = promptStartedAt - runStartedAt;
+		const timings = {
+			setupMs,
+			toolMs,
+			modelMs: Math.max(0, promptFinishedAt - promptStartedAt - toolMs),
+			totalMs,
+		};
 
 		unsubscribe();
 		session.dispose();
@@ -358,6 +400,7 @@ export class WorkersPiRunner implements AgentRunner {
 				turns,
 				toolCalls,
 				filesTouched: [...filesTouched],
+				timings,
 			};
 		}
 
@@ -373,6 +416,7 @@ export class WorkersPiRunner implements AgentRunner {
 				outputTokens: stats.tokens.output,
 				costUsd: stats.cost,
 			},
+			timings,
 			aborted,
 			error: promptError ?? persistenceError,
 		};

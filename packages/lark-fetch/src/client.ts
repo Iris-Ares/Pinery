@@ -134,6 +134,14 @@ export class LarkFetchClient {
     };
   }
 
+  /**
+   * 其他受信任的 Lark 能力(如文档服务)共用同一 tenant token 管理与
+   * 失效单次重试。不暴露 token,调用方仍只能提供确定的 API path/body。
+   */
+  requestApi<T>(method: string, path: string, body?: unknown): Promise<T | undefined> {
+    return this.request<T>(method, path, body);
+  }
+
   private async request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T | undefined> {
     const token = await this.tokens.get();
     const res = await this.fetchImpl(`${this.base}${path}`, {

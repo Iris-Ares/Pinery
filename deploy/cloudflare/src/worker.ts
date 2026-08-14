@@ -22,6 +22,11 @@ import {
 import { getAgentByName } from "agents";
 import type { PineryAgent } from "./agent.js";
 import { loadWorkerConfig } from "./config.js";
+import {
+	BodyTooLargeError,
+	InvalidContentLengthError,
+	readBoundedRequestText,
+} from "./bounded-body.js";
 import { handleLarkEvents } from "./lark-route.js";
 import {
 	type GitOpFailure,
@@ -35,6 +40,13 @@ import {
 	RUNTIME_QUERY_MAX_BODY_BYTES,
 } from "./runtime-query.js";
 import { handleSourceUpload, isSourceUploadPath } from "./source-upload.js";
+import {
+	parseSourceSnapshotFileManifest,
+	parseSourceSnapshotManifest,
+	sha256Hex,
+	verifiedSnapshotFileStream,
+	type SourceSnapshotManifest,
+} from "./source-snapshot.js";
 
 export { PineryAgent } from "./agent.js";
 
@@ -116,6 +128,20 @@ interface SourceHydrateResult {
 	objects: number;
 	bytes: number;
 }
+
+interface SourceHydrationState {
+	prefix: string;
+	nextCursor?: string;
+	files: number;
+	bytes: number;
+	lastRequestCursor: string | null;
+	lastResult: SourceHydrateResult;
+}
+
+const SOURCE_HYDRATION_STATE_KEY = "pinery:source-hydration:v2";
+const MAX_SOURCE_FILE_MANIFEST_BYTES = 2 * 1024 * 1024;
+const MAX_HYDRATE_REQUEST_BYTES = 4096;
+const MAX_WORKSPACE_RPC_REQUEST_BYTES = 2 * 1024 * 1024;
 
 /**
  * 基类:把 DurableObject 的 protected 成员(ctx/env)以公开只读访问器暴露,
@@ -315,43 +341,126 @@ export class PineryWorkspace extends withWorkspace(WorkspaceBase, (self) => ({
 		}
 
 		using ws = await getWorkspace(this);
-		const page = await bucket.list({ prefix, cursor: req.cursor, limit });
-		let bytes = 0;
-		for (let offset = 0; offset < page.objects.length; offset += 4) {
-			const batch = page.objects.slice(offset, offset + 4);
-			await Promise.all(
-				batch.map(async (entry) => {
-					const relative = entry.key.slice(prefix.length);
-					const path = normalizeWorkspacePath(relative);
-					if (!relative || !path)
-						throw new Error(`R2 快照对象路径非法:${entry.key}`);
-					const object = await bucket.get(entry.key);
-					if (!object)
-						throw new Error(`R2 快照对象在水合期间消失:${entry.key}`);
-					const parent = path.slice(0, path.lastIndexOf("/"));
-					if (parent) await ws.fs.mkdir(parent, { recursive: true });
-					await ws.fs.writeFile(path, object.body);
-					bytes += entry.size;
-				}),
+		const rootObject = await bucket.get(`${prefix}.pinery-snapshot.json`);
+		if (!rootObject) throw new Error("R2 快照缺少根清单");
+		if (rootObject.size > 64 * 1024) throw new Error("R2 快照根清单超过 64 KiB");
+		let manifest: SourceSnapshotManifest;
+		try {
+			manifest = parseSourceSnapshotManifest(
+				JSON.parse(await rootObject.text()) as unknown,
 			);
+		} catch (error) {
+			throw new Error(`R2 快照根清单非法:${(error as Error).message}`);
+		}
+		if (manifest.repo !== repoUrl) {
+			throw new Error("快照清单与 PINERY_SOURCE_REPO 不匹配");
 		}
 
-		if (!page.truncated) {
-			const raw = await ws.fs.readFile(
-				`${WORKSPACE_ROOT}/.pinery-snapshot.json`,
-				"utf8",
-			);
-			const manifest = JSON.parse(raw) as unknown;
-			if (
-				typeof manifest !== "object" ||
-				manifest === null ||
-				!("repo" in manifest) ||
-				(manifest as { repo?: unknown }).repo !== repoUrl ||
-				!("commit" in manifest) ||
-				typeof (manifest as { commit?: unknown }).commit !== "string"
-			) {
-				throw new Error("快照清单缺失或与 PINERY_SOURCE_REPO 不匹配");
+		const requestCursor = req.cursor ?? null;
+		let state = await this.ctx.storage.get<SourceHydrationState>(
+			SOURCE_HYDRATION_STATE_KEY,
+		);
+		// 客户端在收到响应前断线时,重试同一 cursor 不会重复计数或写文件。
+		if (
+			state?.prefix === prefix &&
+			state.lastRequestCursor === requestCursor
+		) {
+			return state.lastResult;
+		}
+		if (req.cursor) {
+			if (!state || state.prefix !== prefix || state.nextCursor !== req.cursor) {
+				return {
+					error: {
+						code: "bad_request",
+						message: "hydrate cursor 与服务端进度不一致;请从首批重新开始",
+					},
+				};
 			}
+		} else {
+			let rootExists = true;
+			try {
+				await ws.fs.stat(WORKSPACE_ROOT);
+			} catch {
+				rootExists = false;
+			}
+			if (rootExists) {
+				await ws.fs.rm(WORKSPACE_ROOT, { recursive: true, force: true });
+			}
+			await ws.fs.mkdir(WORKSPACE_ROOT, { recursive: true });
+			state = undefined;
+		}
+
+		const filePrefix = `${prefix}.pinery/files/`;
+		const page = await bucket.list({ prefix: filePrefix, cursor: req.cursor, limit });
+		const batchBytes = await Promise.all(
+			page.objects.map(async (entry) => {
+				if (!entry.key.endsWith(".json") || entry.size > MAX_SOURCE_FILE_MANIFEST_BYTES) {
+					throw new Error(`R2 快照文件清单对象非法:${entry.key}`);
+				}
+				const object = await bucket.get(entry.key);
+				if (!object)
+					throw new Error(`R2 快照文件清单在水合期间消失:${entry.key}`);
+				let file;
+				try {
+					file = parseSourceSnapshotFileManifest(
+						JSON.parse(await object.text()) as unknown,
+					);
+				} catch (error) {
+					throw new Error(`R2 快照文件清单非法:${entry.key}:${(error as Error).message}`);
+				}
+				const pathHash = await sha256Hex(new TextEncoder().encode(file.path));
+				if (entry.key !== `${filePrefix}${pathHash}.json`) {
+					throw new Error(`R2 快照文件清单 key 与 path 不匹配:${entry.key}`);
+				}
+				if (
+					file.chunks.some(
+						(chunk, index) =>
+							chunk.key !==
+							`${prefix}.pinery/chunks/${pathHash}/${String(index).padStart(8, "0")}`,
+					)
+				) {
+					throw new Error(`R2 快照文件清单跨越了快照边界:${entry.key}`);
+				}
+				const path = normalizeWorkspacePath(file.path);
+				if (!path) throw new Error(`R2 快照文件路径非法:${file.path}`);
+				const parent = path.slice(0, path.lastIndexOf("/"));
+				if (parent) await ws.fs.mkdir(parent, { recursive: true });
+				await ws.fs.writeFile(
+					path,
+					verifiedSnapshotFileStream(file, async (key) => {
+						const chunk = await bucket.get(key);
+						return chunk ? { size: chunk.size, body: chunk.body } : null;
+					}),
+					{ mode: file.mode === "100755" ? 0o755 : 0o644 },
+				);
+				return file.size;
+			}),
+		);
+		const bytes = batchBytes.reduce((sum, value) => sum + value, 0);
+		const files = (state?.files ?? 0) + page.objects.length;
+		const totalBytes = (state?.bytes ?? 0) + bytes;
+		if (page.truncated && !page.cursor) {
+			throw new Error("R2 快照列表未完成但没有 cursor");
+		}
+		const result: SourceHydrateResult = {
+			done: !page.truncated,
+			...(page.truncated ? { cursor: page.cursor } : {}),
+			objects: page.objects.length,
+			bytes,
+		};
+
+		if (!page.truncated) {
+			if (files !== manifest.fileCount || totalBytes !== manifest.totalBytes) {
+				throw new Error(
+					`快照不完整:清单声明 ${manifest.fileCount} 文件/${manifest.totalBytes} bytes,` +
+						`实际水合 ${files} 文件/${totalBytes} bytes`,
+				);
+			}
+			await ws.fs.writeFile(
+				`${WORKSPACE_ROOT}/.pinery-snapshot.json`,
+				`${JSON.stringify(manifest, null, 2)}\n`,
+				{ mode: 0o444 },
+			);
 			await writeMarker(ws, {
 				url: repoUrl,
 				ref: req.ref,
@@ -359,12 +468,18 @@ export class PineryWorkspace extends withWorkspace(WorkspaceBase, (self) => ({
 			});
 		}
 
-		return {
-			done: !page.truncated,
-			...(page.truncated ? { cursor: page.cursor } : {}),
-			objects: page.objects.length,
-			bytes,
-		};
+		await this.ctx.storage.put<SourceHydrationState>(
+			SOURCE_HYDRATION_STATE_KEY,
+			{
+				prefix,
+				...(page.truncated ? { nextCursor: page.cursor } : {}),
+				files,
+				bytes: totalBytes,
+				lastRequestCursor: requestCursor,
+				lastResult: result,
+			},
+		);
+		return result;
 	}
 }
 
@@ -449,34 +564,29 @@ export default {
 		if (url.pathname === "/v1/agent/query" && request.method === "POST") {
 			if (!authorized(request, env.PINERY_TOKEN))
 				return fail("unauthorized", "鉴权失败");
-			const declaredLength = Number(
-				request.headers.get("content-length") ?? "0",
-			);
-			if (
-				!Number.isFinite(declaredLength) ||
-				declaredLength < 0 ||
-				declaredLength > RUNTIME_QUERY_MAX_BODY_BYTES
-			) {
-				return fail(
-					"bad_request",
-					`请求体不能超过 ${RUNTIME_QUERY_MAX_BODY_BYTES} bytes`,
-				);
-			}
-
 			let input: ReturnType<typeof parseRuntimeQueryInput>;
 			try {
-				const raw = await request.text();
-				if (
-					new TextEncoder().encode(raw).byteLength >
-					RUNTIME_QUERY_MAX_BODY_BYTES
-				) {
-					return fail(
-						"bad_request",
-						`请求体不能超过 ${RUNTIME_QUERY_MAX_BODY_BYTES} bytes`,
-					);
-				}
+				const raw = await readBoundedRequestText(
+					request,
+					RUNTIME_QUERY_MAX_BODY_BYTES,
+				);
 				input = parseRuntimeQueryInput(JSON.parse(raw) as unknown);
 			} catch (error) {
+				if (error instanceof BodyTooLargeError) {
+					return json(
+						{
+							ok: false,
+							error: {
+								code: "body_too_large",
+								message: `请求体不能超过 ${RUNTIME_QUERY_MAX_BODY_BYTES} bytes`,
+							},
+						},
+						413,
+					);
+				}
+				if (error instanceof InvalidContentLengthError) {
+					return fail("bad_request", "Content-Length 必须是非负整数");
+				}
 				return fail(
 					"bad_request",
 					error instanceof Error ? error.message : "请求体不是合法 JSON",
@@ -523,7 +633,9 @@ export default {
 
 			let body: SourceHydrateRequest;
 			try {
-				const raw = (await request.json()) as unknown;
+				const raw = JSON.parse(
+					await readBoundedRequestText(request, MAX_HYDRATE_REQUEST_BYTES),
+				) as unknown;
 				if (typeof raw !== "object" || raw === null || Array.isArray(raw))
 					throw new Error("not an object");
 				const record = raw as Record<string, unknown>;
@@ -548,7 +660,19 @@ export default {
 					...(typeof record.limit === "number" ? { limit: record.limit } : {}),
 					...(typeof record.ref === "string" ? { ref: record.ref } : {}),
 				};
-			} catch {
+			} catch (error) {
+				if (error instanceof BodyTooLargeError) {
+					return json(
+						{
+							ok: false,
+							error: {
+								code: "body_too_large",
+								message: `hydrate 请求体不得超过 ${MAX_HYDRATE_REQUEST_BYTES} bytes`,
+							},
+						},
+						413,
+					);
+				}
 				return fail("bad_request", "hydrate 请求体不是合法 JSON 对象");
 			}
 
@@ -595,8 +719,22 @@ export default {
 
 		let body: WireRequest;
 		try {
-			body = (await request.json()) as WireRequest;
-		} catch {
+			body = JSON.parse(
+				await readBoundedRequestText(request, MAX_WORKSPACE_RPC_REQUEST_BYTES),
+			) as WireRequest;
+		} catch (error) {
+			if (error instanceof BodyTooLargeError) {
+				return json(
+					{
+						ok: false,
+						error: {
+							code: "body_too_large",
+							message: `workspace RPC 请求体不得超过 ${MAX_WORKSPACE_RPC_REQUEST_BYTES} bytes`,
+						},
+					},
+					413,
+				);
+			}
 			return fail("bad_request", "请求体不是合法 JSON");
 		}
 		if (!body || typeof body.op !== "string")

@@ -1,4 +1,5 @@
 import { loadConfig, resolvePaths } from "@pinery/core";
+import { LarkDocumentService, LarkFetchClient } from "@pinery/lark-fetch";
 import { Orchestrator } from "../orchestrator.js";
 import { ensureCheckout, startPullLoop } from "../repo-sync.js";
 import { createRunner } from "../runner-factory.js";
@@ -44,11 +45,20 @@ export async function runStart(opts: { config: string }): Promise<void> {
   }
 
   const lark = new LarkService(cfg.lark);
+  const documents = new LarkDocumentService(
+    new LarkFetchClient({
+      appId: cfg.lark.app_id,
+      appSecret: cfg.lark.app_secret,
+      domain: cfg.lark.endpoint,
+      baseUrl: cfg.lark.api_base,
+    }),
+    { domain: cfg.lark.endpoint, maxChars: cfg.limits.document_read_max_chars },
+  );
   const bot = await lark.fetchBotIdentity();
   if (bot.name) log(`[lark] 机器人身份:${bot.name}(${bot.openId ?? "?"})`);
   else log("[lark] ⚠️ 未能获取机器人身份:群聊 @ 识别可能失效(检查凭据与权限)");
 
-  const orchestrator = new Orchestrator({ cfg, storage, runner, lark, workspaces, log });
+  const orchestrator = new Orchestrator({ cfg, storage, runner, lark, documents, workspaces, log });
 
   const shutdown = () => {
     log("收到退出信号,正在关闭 …");

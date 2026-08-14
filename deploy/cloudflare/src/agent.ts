@@ -1,5 +1,10 @@
 import { gate, RateLimiter } from "@pinery/adapter/gateway";
 import {
+	DocumentActionController,
+	parseDocumentInteraction,
+	type DocumentInteraction,
+} from "@pinery/adapter/document-actions";
+import {
 	CANCEL_RE,
 	type InvestigationDeps,
 	runInvestigationPipeline,
@@ -21,13 +26,17 @@ import { Storage } from "@pinery/adapter/storage";
 import {
 	filterSecrets,
 	repoDisplayName,
+	resolveUserLevel,
 	type PineryConfig,
 	type RepoConfig,
 	runnerModelConfig,
 } from "@pinery/core";
-import { LarkFetchClient } from "@pinery/lark-fetch";
+import { LarkDocumentService, LarkFetchClient } from "@pinery/lark-fetch";
 import { WorkersPiRunner } from "@pinery/runner-pi/workers";
-import { CfComputerWorkspaceProvider } from "@pinery/workspace-cf-computer";
+import {
+	CfComputerWorkspaceProvider,
+	sharedSnapshotsFromConfig,
+} from "@pinery/workspace-cf-computer";
 import { Agent } from "agents";
 import {
 	envStrings,
@@ -70,6 +79,7 @@ interface Assembled {
 	storage: Storage;
 	limiter: RateLimiter;
 	lark: WorkersLarkMessenger;
+	documents: LarkDocumentService;
 }
 
 export interface RuntimeSmokeResult extends RuntimeSmokeSummary {
@@ -103,21 +113,27 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 		sql.exec(
 			"CREATE TABLE IF NOT EXISTS pending_msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT NOT NULL, repo TEXT NOT NULL, question TEXT NOT NULL, created_at INTEGER NOT NULL)",
 		);
+		sql.exec(
+			"CREATE TABLE IF NOT EXISTS pending_doc_msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT NOT NULL, interaction TEXT NOT NULL, created_at INTEGER NOT NULL)",
+		);
 
 		const storage = new Storage(doSqliteDriver(sql));
-		const lark = new WorkersLarkMessenger(
-			new LarkFetchClient({
-				appId: cfg.lark.app_id,
-				appSecret: cfg.lark.app_secret,
-				domain: cfg.lark.endpoint,
-				baseUrl: cfg.lark.api_base,
-			}),
-		);
+		const larkClient = new LarkFetchClient({
+			appId: cfg.lark.app_id,
+			appSecret: cfg.lark.app_secret,
+			domain: cfg.lark.endpoint,
+			baseUrl: cfg.lark.api_base,
+		});
+		const lark = new WorkersLarkMessenger(larkClient);
+		const documents = new LarkDocumentService(larkClient, {
+			domain: cfg.lark.endpoint,
+			maxChars: cfg.limits.document_read_max_chars,
+		});
 		const o = cfg.workspace.options;
 		const workspaces = new CfComputerWorkspaceProvider({
 			client: new DirectWorkspaceClient(this.env.WORKSPACE),
 			execBackend: o["exec_backend"] ?? "worker-shell",
-			sharedSnapshotId: o["shared_snapshot_id"],
+			sharedSnapshots: sharedSnapshotsFromConfig(cfg),
 			cloneDepth: o["clone_depth"] ? Number(o["clone_depth"]) : 1,
 			execTimeoutMs: o["exec_timeout_ms"]
 				? Number(o["exec_timeout_ms"])
@@ -153,12 +169,14 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 			cfg,
 			storage,
 			lark,
+			documents,
 			limiter: new RateLimiter(cfg.limits.rate_per_user_per_min),
 			deps: {
 				cfg,
 				storage,
 				runner,
 				lark,
+				documents,
 				workspaces,
 				running: this.running,
 				log,
@@ -411,6 +429,47 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 			return { accepted: true, reason: "cancelled" };
 		}
 
+		const documentInteraction = parseDocumentInteraction(msg.text);
+		if (documentInteraction) {
+			const repliesToBot = storage.isBotMessage(msg.parentId, msg.chatId);
+			if (msg.chatType === "group" && !msg.mentionsBot && !repliesToBot) {
+				return { accepted: false, reason: "group-not-addressed" };
+			}
+			const allowed = cfg.repos.some(
+				(repo) => {
+					const level = resolveUserLevel(
+						repo,
+						msg.senderOpenId,
+						msg.chatType,
+						repo.chats.includes(msg.chatId),
+					);
+					return level !== undefined && level >= 1;
+				},
+			);
+			if (!allowed) {
+				await this.replyAndRemember(
+					msg,
+					deniedCard("文档写入需要至少 L1 权限,请联系管理员。"),
+				).catch(() => {});
+				return { accepted: true, reason: "denied" };
+			}
+			if (!limiter.allow(msg.senderOpenId)) {
+				await this.replyAndRemember(
+					msg,
+					deniedCard("操作太频繁了,请一分钟后再试。"),
+				).catch(() => {});
+				return { accepted: true, reason: "rate_limited" };
+			}
+			sql.exec(
+				"INSERT INTO pending_doc_msgs (msg, interaction, created_at) VALUES (?, ?, ?)",
+				JSON.stringify(msg),
+				JSON.stringify(documentInteraction),
+				Date.now(),
+			);
+			this.ensureDrain();
+			return { accepted: true, reason: "document_queued" };
+		}
+
 		const row = storage.getSession(sessionKey);
 		const hasActiveSession =
 			this.draining ||
@@ -495,9 +554,38 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 	}
 
 	private async drainPending(): Promise<void> {
-		const { cfg, deps } = this.assemble();
+		const { cfg, deps, documents, storage } = this.assemble();
 		const sql = this.ctx.storage.sql;
 		for (;;) {
+			const documentRow = sql
+				.exec<{ id: number; msg: string; interaction: string }>(
+					"SELECT id, msg, interaction FROM pending_doc_msgs ORDER BY id LIMIT 1",
+				)
+				.toArray()[0];
+			if (documentRow) {
+				try {
+					const msg = JSON.parse(documentRow.msg) as IncomingMessage;
+					const interaction = JSON.parse(documentRow.interaction) as DocumentInteraction;
+					const controller = new DocumentActionController({
+						storage,
+						documents,
+						domain: cfg.lark.endpoint,
+						maxWriteChars: cfg.limits.document_write_max_chars,
+						confirmationTimeoutMin:
+							cfg.limits.document_confirmation_timeout_min,
+						reply: (card) => this.replyAndRemember(msg, card),
+						log: (line) => console.log(line),
+					});
+					await controller.handle(msg, interaction);
+				} catch (error) {
+					console.log(
+						`[pinery-agent] 文档操作异常:${error instanceof Error ? error.stack : String(error)}`,
+					);
+				} finally {
+					sql.exec("DELETE FROM pending_doc_msgs WHERE id = ?", documentRow.id);
+				}
+				continue;
+			}
 			const row = sql
 				.exec<{ id: number; msg: string; repo: string; question: string }>(
 					"SELECT id, msg, repo, question FROM pending_msgs ORDER BY id LIMIT 1",
@@ -524,6 +612,25 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 	 */
 	override async onFiberRecovered(): Promise<void> {
 		const sql = this.ctx.storage.sql;
+		const documentRows = sql
+			.exec<{ id: number; msg: string }>(
+				"SELECT id, msg FROM pending_doc_msgs ORDER BY id",
+			)
+			.toArray();
+		for (const row of documentRows) {
+			try {
+				const msg = JSON.parse(row.msg) as IncomingMessage;
+				await this.replyAndRemember(
+					msg,
+					errorCard(
+						"文档操作在运行环境重启中被中断。",
+						"请先查看目标文档的实际状态;不要重复确认同一操作,需要时重新发起。",
+					),
+				).catch(() => {});
+			} finally {
+				sql.exec("DELETE FROM pending_doc_msgs WHERE id = ?", row.id);
+			}
+		}
 		const rows = sql
 			.exec<{ id: number; msg: string }>(
 				"SELECT id, msg FROM pending_msgs ORDER BY id",
@@ -546,10 +653,13 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 	}
 
 	private pendingCount(): number {
-		const row = this.ctx.storage.sql
+		const investigations = this.ctx.storage.sql
 			.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending_msgs")
 			.one();
-		return row?.n ?? 0;
+		const documents = this.ctx.storage.sql
+			.exec<{ n: number }>("SELECT COUNT(*) AS n FROM pending_doc_msgs")
+			.one();
+		return (investigations?.n ?? 0) + (documents?.n ?? 0);
 	}
 
 	private async replyStatus(msg: IncomingMessage, repo: RepoConfig): Promise<void> {

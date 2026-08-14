@@ -64,6 +64,8 @@ export interface RunnerRunOptions {
   level: PermissionLevel;
   maxTurns: number;
   timeoutMs: number;
+  /** 硬超时前的结论收敛预留时间;0 表示禁用软时限 */
+  synthesisReserveMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: RunnerEvent) => void;
   model?: RunnerModelConfig;
@@ -77,6 +79,16 @@ export interface RunnerUsage {
   costUsd: number;
 }
 
+export interface RunnerTimings {
+  /** runner 内部模型/资源/会话准备 */
+  setupMs: number;
+  /** 工具执行墙钟时间之和 */
+  toolMs: number;
+  /** 扣除 setup 与工具后的模型/消息处理时间 */
+  modelMs: number;
+  totalMs: number;
+}
+
 export interface RunnerResult {
   ok: boolean;
   /** 最终 markdown 回答(未过 secret 过滤,出站过滤是 adapter 的职责) */
@@ -88,6 +100,7 @@ export interface RunnerResult {
   /** 本次触达的文件相对路径(尽力收集,文件级缓存的地基) */
   filesTouched: string[];
   usage?: RunnerUsage;
+  timings?: RunnerTimings;
   aborted?: RunnerAbortReason;
   error?: string;
 }

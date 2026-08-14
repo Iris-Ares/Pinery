@@ -18,6 +18,11 @@ const repoSchema = z.object({
   /** 聊天中的自然称呼/简称;用于意图路由,不要求用户理解 workspace */
   aliases: z.array(z.string().min(1)).default([]),
   url: z.string().min(1),
+  /** CF Computer 预水合快照 workspace;必须按仓库显式绑定,不得跨仓共用 */
+  snapshot_id: z
+    .string()
+    .regex(/^s-[A-Za-z0-9._-]{1,126}$/, "snapshot_id 必须以 s- 开头,且只含安全字符(最长 128)")
+    .optional(),
   /** 本地 checkout 路径;缺省 <workspace.root>/repos/<name> */
   path: z.string().optional(),
   /** 可选的群默认项目提示;不是默认访问白名单 */
@@ -58,10 +63,15 @@ const modelSchema = z.object({
 const limitsSchema = z.object({
   session_max_turns: z.number().int().positive().default(20),
   task_timeout_min: z.number().positive().default(30),
+  /** 硬超时前预留给停止探索、整理已有证据与输出结论的时间 */
+  synthesis_reserve_sec: z.number().nonnegative().max(3600).default(30),
   /** thread 空闲多久后封存(fresh + 注入摘要续接) */
   session_idle_archive_min: z.number().positive().default(240),
   max_concurrent_tasks: z.number().int().positive().default(2),
   answer_max_chars: z.number().int().positive().default(3500),
+  document_read_max_chars: z.number().int().positive().max(100_000).default(12_000),
+  document_write_max_chars: z.number().int().positive().max(20_000).default(20_000),
+  document_confirmation_timeout_min: z.number().positive().max(1440).default(10),
   rate_per_user_per_min: z.number().int().positive().default(6),
 });
 

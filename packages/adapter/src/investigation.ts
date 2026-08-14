@@ -11,6 +11,7 @@ import {
   type RepoConfig,
   type WorkspaceProvider,
 } from "@pinery/core";
+import type { LarkDocumentService } from "@pinery/lark-fetch";
 import { answerCard, errorCard, progressCard, timeoutCard, toolLine, type Card } from "./lark/cards.js";
 import {
   combineInvestigationContext,
@@ -21,6 +22,7 @@ import type { IncomingMessage } from "./lark/events.js";
 import type { LarkMessenger } from "./lark/messenger.js";
 import { buildSessionSummary, planSession, replyInThreadFor, sessionKeyFor } from "./sessions.js";
 import type { Storage } from "./storage.js";
+import { loadDocumentContext, type DocumentContextResult } from "./document-context.js";
 
 /** 进度卡片最小 patch 间隔 */
 const PATCH_INTERVAL_MS = 1500;
@@ -38,6 +40,8 @@ export interface InvestigationDeps {
   storage: Storage;
   runner: AgentRunner;
   lark: LarkMessenger;
+  /** 外部飞书文档只读入上下文;写入始终由 document action controller 带外执行 */
+  documents?: LarkDocumentService;
   /** 工作区后端(缺省 local 共享 checkout) */
   workspaces?: WorkspaceProvider;
   /** 运行中任务登记表:取消命令经此 abort(宿主持有并共享给路由层) */
@@ -126,8 +130,11 @@ export async function runInvestigationPipeline(
   // 否则进度卡片会永远停在「调查中」。
   let workspace: ProvidedWorkspace;
   let groupContext: GroupContextLoadResult;
+  let documentContext: DocumentContextResult;
+  const workspaceStartedAt = Date.now();
+  let workspaceReadyAt = workspaceStartedAt;
   try {
-    [workspace, groupContext] = await Promise.all([
+    [workspace, groupContext, documentContext] = await Promise.all([
       deps.workspaces
         ? deps.workspaces.acquireSession(repo, sessionKey)
         : Promise.resolve({
@@ -137,7 +144,9 @@ export async function runInvestigationPipeline(
             readOnly: true,
           }),
       loadRelevantGroupContextResult(lark, msg, log),
+      loadDocumentContext(question, deps.documents, cfg.limits.document_read_max_chars),
     ]);
+    workspaceReadyAt = Date.now();
   } catch (e) {
     if (patchTimer) clearTimeout(patchTimer);
     deps.running.delete(sessionKey);
@@ -147,6 +156,10 @@ export async function runInvestigationPipeline(
       .catch(() => {});
     storage.audit({ sessionKey, taskId, repo: repo.name, kind: "error", detail: `workspace: ${detail}` });
     return;
+  }
+
+  if (documentContext.errors.length > 0) {
+    log(`[investigation] ${documentContext.errors.length} 个飞书文档未能读取`);
   }
 
   let plan: ReturnType<typeof planSession>;
@@ -174,7 +187,10 @@ export async function runInvestigationPipeline(
     return;
   }
 
-  const taskContext = combineInvestigationContext(plan.context, groupContext.context);
+  const taskContext = combineInvestigationContext(
+    combineInvestigationContext(plan.context, groupContext.context),
+    documentContext.context,
+  );
 
   const checkoutDir = workspace.dir;
   let result: Awaited<ReturnType<AgentRunner["run"]>>;
@@ -193,6 +209,7 @@ export async function runInvestigationPipeline(
         level: 0,
         maxTurns: cfg.limits.session_max_turns,
         timeoutMs: cfg.limits.task_timeout_min * 60_000,
+        synthesisReserveMs: cfg.limits.synthesis_reserve_sec * 1000,
         signal: abort.signal,
         model,
         onEvent: (e) => {
@@ -213,6 +230,9 @@ export async function runInvestigationPipeline(
             case "policy_block":
               storage.audit({ sessionKey, taskId, repo: repo.name, kind: "policy_block", tool: e.tool, detail: e.reason });
               pushProgress(toolLine("policy", `已拦截:${filterSecrets(e.reason).text}`));
+              break;
+            case "note":
+              pushProgress(filterSecrets(e.text).text);
               break;
             default:
               break;
@@ -241,6 +261,23 @@ export async function runInvestigationPipeline(
   }
 
   const durationMs = Date.now() - startedAt;
+  const runnerTimings = result.timings;
+  const toolMs = runnerTimings?.toolMs ?? 0;
+  const modelMs = runnerTimings?.modelMs ?? Math.max(0, durationMs - toolMs);
+  const platformMs = Math.max(0, durationMs - toolMs - modelMs);
+  log(
+    JSON.stringify({
+      event: "pinery.investigation.latency",
+      taskId,
+      repo: repo.name,
+      totalMs: durationMs,
+      workspaceMs: workspaceReadyAt - workspaceStartedAt,
+      platformMs,
+      modelMs,
+      toolMs,
+      runnerSetupMs: runnerTimings?.setupMs,
+    }),
+  );
 
   // 中止优先于部分输出:模型可能已吐出片段文本,但取消/超时/轮数超限的结果
   // 不是答案 —— 既不能呈现为成功,也不能污染 golden set 与会话记忆。
@@ -323,7 +360,7 @@ export async function runInvestigationPipeline(
     taskId,
     repo: repo.name,
     kind: "task_end",
-    detail: `ok=${result.ok} turns=${result.turns} tools=${result.toolCalls} files=${result.filesTouched.length}${result.aborted ? ` aborted=${result.aborted}` : ""}`,
+    detail: `ok=${result.ok} turns=${result.turns} tools=${result.toolCalls} files=${result.filesTouched.length} latency_ms(platform=${platformMs},model=${modelMs},tool=${toolMs})${result.aborted ? ` aborted=${result.aborted}` : ""}`,
   });
 
   // 每问必存(golden set 从 M1 第一天积累,PRD §6)

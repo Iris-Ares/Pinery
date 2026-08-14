@@ -254,7 +254,7 @@ describe("CfComputerWorkspaceProvider", () => {
       endpoint: worker.url,
       token: TOKEN,
       retries: 0,
-      sharedSnapshotId: "s-example-main-snapshot",
+      sharedSnapshots: { demo: "s-example-main-snapshot" },
     });
     const a = await p.acquireSession(repo, "p2p:oc_1");
     const b = await p.acquireSession(repo, "group:oc_2");
@@ -429,5 +429,62 @@ workspace:
   it("fails fast with actionable messages when options are missing", () => {
     const cfg = parseConfig(`${base}\nworkspace: { provider: "@pinery/workspace-cf-computer" }\n`, {} as NodeJS.ProcessEnv);
     expect(() => createWorkspaceProvider(cfg)).toThrow(/endpoint/);
+  });
+
+  it("uses one repo-scoped snapshot while another repo gets its own session workspace", async () => {
+    const cfg = parseConfig(
+      `
+lark: { app_id: x, app_secret: y }
+repos:
+  - { name: alpha, url: "https://github.com/o/alpha.git", snapshot_id: s-alpha-snapshot }
+  - { name: beta, url: "https://github.com/o/beta.git" }
+workspace:
+  options:
+    endpoint: ${worker.url}
+    token: ${TOKEN}
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    const p = createWorkspaceProvider(cfg);
+    const alpha = await p.acquireSession(cfg.repos[0]!, "same-session");
+    const beta = await p.acquireSession(cfg.repos[1]!, "same-session");
+    expect(alpha.handle).toBe("s-alpha-snapshot");
+    expect(beta.handle).toMatch(/^s-beta-/);
+    expect(beta.handle).not.toBe(alpha.handle);
+  });
+
+  it("rejects legacy global snapshots for a multi-repo configuration", () => {
+    const cfg = parseConfig(
+      `
+lark: { app_id: x, app_secret: y }
+repos:
+  - { name: alpha, url: "https://github.com/o/alpha.git" }
+  - { name: beta, url: "https://github.com/o/beta.git" }
+workspace:
+  options:
+    endpoint: https://pinery.workers.dev
+    token: tok
+    shared_snapshot_id: s-global-snapshot
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    expect(() => createWorkspaceProvider(cfg)).toThrow(/\u5355\u4ed3\u5e93/);
+  });
+
+  it("rejects one snapshot workspace bound to two repositories", () => {
+    const cfg = parseConfig(
+      `
+lark: { app_id: x, app_secret: y }
+repos:
+  - { name: alpha, url: "https://github.com/o/alpha.git", snapshot_id: s-same }
+  - { name: beta, url: "https://github.com/o/beta.git", snapshot_id: s-same }
+workspace:
+  options:
+    endpoint: https://pinery.workers.dev
+    token: tok
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    expect(() => createWorkspaceProvider(cfg)).toThrow(/\u540c\u65f6\u7ed1\u5b9a/);
   });
 });

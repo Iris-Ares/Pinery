@@ -9,6 +9,11 @@ export {
 } from "./toolset.js";
 export { buildSystemPrompt } from "./prompt.js";
 export {
+  SYNTHESIS_STEER_MESSAGE,
+  startSynthesisReserveTimer,
+  synthesisDelayMs,
+} from "./budget.js";
+export {
   loadRepositoryGuidance,
   type RepositoryGuidance,
   type RepositorySkillSummary,

@@ -26,9 +26,10 @@
 | `im:message:send_as_bot` | 以应用身份发送/更新卡片 | ✅ |
 | `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 | ✅ |
 | `im:message.group_at_msg:readonly` | 读取群内 @ 机器人的消息 | ✅(群聊场景) |
-| `im:message.group_msg:readonly` | 读取群内所有消息 | 可选:话题内追问免 @(需申请,按需) |
+| `im:message:readonly` | 获取单聊、群组消息；每次 @ 时分页读取群历史并动态检索相关上下文 | 复杂群聊体验必需 |
 
-> 不开 `group_msg:readonly` 时功能仍完整,只是话题内每次追问都要 @ 机器人。
+> 不开 `im:message:readonly` 时仍可被 @ 后回答,但无法在每次 @ 时动态检索此前群聊背景;
+> 后续追问需要再次 @,或直接引用回复 Bot 的上一张卡片。
 
 ## 4. 事件订阅(按部署形态二选一)
 
@@ -60,9 +61,13 @@
 
 在目标群 → 设置 → 群机器人 → 添加机器人 → 选择 Pinery。
 
-**获取群的 chat_id**(填进 `pinery.yaml` 的 `repos[].chats`):
+Pinery 默认不要求绑定群聊:单项目直接使用;多项目优先按问题中的项目名/别名判断,
+无法确定时会主动给出项目选择卡片。
 
-- 方式 A:先不填 chats 启动 Pinery,在群里 @ 它,日志会打印被拒会话的 chat_id(`oc_` 开头)
+如果希望某个群默认指向特定项目,可选获取群的 chat_id,填进
+`pinery.yaml` 的 `repos[].chats`(它只是路由提示,不是访问白名单):
+
+- 方式 A:先不填 chats 启动 Pinery,在群里 @ 它,从事件日志查看 chat_id(`oc_` 开头)
 - 方式 B:用[开放平台 API 调试台](https://open.feishu.cn/api-explorer)调 `im.v1.chat.list`
 
 ## 7. 校验
@@ -81,6 +86,7 @@ pinery start       # 启动长连接服务
 ## 常见问题
 
 - **doctor 提示凭据失败**:检查 App Secret 是否复制完整;应用是否已发布;网络能否到达 open.feishu.cn。
-- **群里 @ 没反应**:确认 ③ 中群消息权限已开通、④ 中事件已添加、应用已发布新版本、群已登记进 `repos[].chats`。
+- **群里 @ 没反应**:确认 ③ 中群消息权限已开通、④ 中事件已添加、应用已发布新版本,并确认 Bot 已加入该群。
+- **能回答但声称看不到此前群聊**:确认应用身份权限 `im:message:readonly` 已开通；`im:message.group_at_msg:readonly` 只允许接收 @ Bot 的消息，不能读取会话历史。
 - **单聊没反应**:确认 `im:message.p2p_msg:readonly` 已开通;查看 `pinery start` 日志。
 - **海外 Lark**:`pinery.yaml` 中 `lark.endpoint: lark`。

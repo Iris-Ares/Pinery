@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { answerCard, cardJson, errorCard, helpCard, progressCard, toolLine } from "../src/lark/cards.js";
+import {
+  answerCard,
+  cardJson,
+  errorCard,
+  helpCard,
+  progressCard,
+  projectChoiceCard,
+  toolLine,
+} from "../src/lark/cards.js";
 
 describe("cards", () => {
   it("progress card shows recent tool lines and elapsed", () => {
@@ -55,6 +63,35 @@ describe("cards", () => {
     expect(json).toContain("已截断");
   });
 
+  it("answer card exposes dynamic group-context diagnostics", () => {
+    const loaded = cardJson(
+      answerCard(
+        "q",
+        { conclusion: "c" },
+        {
+          repo: "r",
+          durationMs: 1000,
+          turns: 1,
+          groupContext: { status: "loaded", selected: 6, candidates: 20 },
+        },
+      ),
+    );
+    const failed = cardJson(
+      answerCard(
+        "q",
+        { conclusion: "c" },
+        {
+          repo: "r",
+          durationMs: 1000,
+          turns: 1,
+          groupContext: { status: "error", selected: 0, candidates: 0, code: 99991679 },
+        },
+      ),
+    );
+    expect(loaded).toContain("群上下文:6/20 条");
+    expect(failed).toContain("群上下文:不可用(99991679)");
+  });
+
   it("long question is trimmed in title", () => {
     const card = answerCard("很长的问题".repeat(20), { conclusion: "c" }, { repo: "r", durationMs: 0, turns: 0 });
     expect(card.header.title.content.length).toBeLessThanOrEqual(45);
@@ -62,6 +99,19 @@ describe("cards", () => {
 
   it("error and help cards build", () => {
     expect(cardJson(errorCard("boom", "hint"))).toContain("boom");
-    expect(cardJson(helpCard({ repo: "order", levelName: "L0 观察" }))).toContain("order");
+    const help = cardJson(helpCard({ repo: "order", levelName: "L0 观察" }));
+    expect(help).toContain("order");
+    expect(help).not.toContain("你的级别");
+    expect(help).not.toContain("workspace");
+    expect(help).not.toContain("工作区");
+  });
+
+  it("project choice card asks for intent without exposing repository bindings", () => {
+    const json = cardJson(projectChoiceCard(["订单", "库存"], "请选择项目"));
+    expect(json).toContain("你指的是哪个项目");
+    expect(json).toContain("订单");
+    expect(json).toContain("库存");
+    expect(json).not.toContain("绑定");
+    expect(json).not.toContain("workspace");
   });
 });

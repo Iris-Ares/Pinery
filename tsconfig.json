@@ -21,6 +21,12 @@
     },
     {
       "path": "packages/adapter"
+    },
+    {
+      "path": "deploy/cloudflare"
+    },
+    {
+      "path": "scripts"
     }
   ]
 }

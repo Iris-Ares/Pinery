@@ -3,7 +3,8 @@ import { dirname } from "node:path";
 import { openSqlite, type SqliteDriver } from "./sqlite-driver.js";
 
 /**
- * SQLite 存储(PRD §3.1):thread→session 映射、审计日志、问答留痕(golden set 地基)。
+ * SQLite 存储(PRD §3.1):conversation→session 映射、Bot 消息锚点、审计日志、
+ * 问答留痕(golden set 地基)。
  * 运行时内置 sqlite(Bun→bun:sqlite / Node→node:sqlite),零原生编译依赖。
  */
 
@@ -13,9 +14,26 @@ export interface SessionRow {
   chat_type: string;
   repo: string;
   runner_ref: string | null;
+  runner_kind: string | null;
+  workspace_handle: string | null;
+  workspace_branch: string | null;
+  workspace_read_only: number | null;
   summary: string | null;
   state: "active" | "archived";
   turns: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface RunnerSessionRow {
+  runner_ref: string;
+  runner_kind: string;
+  repo: string;
+  workspace_handle: string;
+  workspace_dir: string;
+  workspace_branch: string | null;
+  workspace_read_only: number;
+  state_json: string;
   created_at: number;
   updated_at: number;
 }
@@ -68,12 +86,30 @@ export class Storage {
 
   private migrate(): void {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS _pinery_schema_migrations (
+        id         INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+    `);
+    const sessionsExisted = !!this.db
+      .prepare("SELECT 1 AS found FROM sqlite_schema WHERE type = 'table' AND name = 'sessions'")
+      .get();
+    const migration = this.db
+      .prepare("SELECT COALESCE(MAX(id), 0) AS version FROM _pinery_schema_migrations")
+      .get() as { version?: number } | undefined;
+    const version = migration?.version ?? 0;
+
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         session_key TEXT PRIMARY KEY,
         chat_id     TEXT NOT NULL,
         chat_type   TEXT NOT NULL,
         repo        TEXT NOT NULL,
         runner_ref  TEXT,
+        runner_kind TEXT,
+        workspace_handle TEXT,
+        workspace_branch TEXT,
+        workspace_read_only INTEGER,
         summary     TEXT,
         state       TEXT NOT NULL DEFAULT 'active',
         turns       INTEGER NOT NULL DEFAULT 0,
@@ -109,7 +145,42 @@ export class Storage {
         golden      INTEGER NOT NULL DEFAULT 0,
         note        TEXT
       );
+      CREATE TABLE IF NOT EXISTS bot_messages (
+        message_id  TEXT PRIMARY KEY,
+        chat_id     TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        ts          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_bot_messages_ts ON bot_messages(ts);
+      CREATE TABLE IF NOT EXISTS runner_sessions (
+        runner_ref          TEXT PRIMARY KEY,
+        runner_kind         TEXT NOT NULL,
+        repo                TEXT NOT NULL,
+        workspace_handle    TEXT NOT NULL,
+        workspace_dir       TEXT NOT NULL,
+        workspace_branch    TEXT,
+        workspace_read_only INTEGER NOT NULL,
+        state_json          TEXT NOT NULL,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      );
     `);
+
+    // DO SQLite 不支持 PRAGMA user_version；用普通迁移表记录版本。全新库的
+    // CREATE TABLE 已是最新版，旧库才执行一次 ALTER TABLE。
+    if (version < 2) {
+      if (sessionsExisted) {
+        this.db.exec(`
+          ALTER TABLE sessions ADD COLUMN runner_kind TEXT;
+          ALTER TABLE sessions ADD COLUMN workspace_handle TEXT;
+          ALTER TABLE sessions ADD COLUMN workspace_branch TEXT;
+          ALTER TABLE sessions ADD COLUMN workspace_read_only INTEGER;
+        `);
+      }
+      this.db
+        .prepare("INSERT INTO _pinery_schema_migrations (id, applied_at) VALUES (?, ?)")
+        .run(2, Date.now());
+    }
   }
 
   // -- sessions ------------------------------------------------------------
@@ -127,17 +198,33 @@ export class Storage {
     chatType: string;
     repo: string;
     runnerRef?: string;
+    runnerKind?: string;
+    workspaceHandle?: string;
+    workspaceBranch?: string;
+    workspaceReadOnly?: boolean;
     summary?: string;
     turns: number;
     state?: "active" | "archived";
   }): void {
     const now = Date.now();
+    const previousRunnerRef = this.getSession(row.sessionKey)?.runner_ref;
     this.db
       .prepare(`
-        INSERT INTO sessions (session_key, chat_id, chat_type, repo, runner_ref, summary, state, turns, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (
+          session_key, chat_id, chat_type, repo, runner_ref, runner_kind,
+          workspace_handle, workspace_branch, workspace_read_only,
+          summary, state, turns, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_key) DO UPDATE SET
+          chat_id     = excluded.chat_id,
+          chat_type   = excluded.chat_type,
+          repo        = excluded.repo,
           runner_ref = excluded.runner_ref,
+          runner_kind = excluded.runner_kind,
+          workspace_handle = excluded.workspace_handle,
+          workspace_branch = excluded.workspace_branch,
+          workspace_read_only = excluded.workspace_read_only,
           summary    = excluded.summary,
           state      = excluded.state,
           turns      = excluded.turns,
@@ -149,18 +236,96 @@ export class Storage {
         row.chatType,
         row.repo,
         row.runnerRef ?? null,
+        row.runnerKind ?? null,
+        row.workspaceHandle ?? null,
+        row.workspaceBranch ?? null,
+        row.workspaceReadOnly === undefined ? null : row.workspaceReadOnly ? 1 : 0,
         row.summary ?? null,
         row.state ?? "active",
         row.turns,
         now,
         now,
       );
+    if (previousRunnerRef && previousRunnerRef !== row.runnerRef) {
+      this.db.prepare("DELETE FROM runner_sessions WHERE runner_ref = ?").run(previousRunnerRef);
+    }
+  }
+
+  // -- runner session snapshots ------------------------------------------
+
+  getRunnerSession(runnerRef: string): RunnerSessionRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM runner_sessions WHERE runner_ref = ?")
+      .get(runnerRef) as unknown as RunnerSessionRow | undefined;
+    return row ?? undefined;
+  }
+
+  saveRunnerSession(row: {
+    runnerRef?: string;
+    runnerKind: string;
+    repo: string;
+    workspaceHandle: string;
+    workspaceDir: string;
+    workspaceBranch?: string;
+    workspaceReadOnly: boolean;
+    stateJson: string;
+  }): string {
+    const now = Date.now();
+    const runnerRef = row.runnerRef ?? `piw:${globalThis.crypto.randomUUID()}`;
+    this.db
+      .prepare(`
+        INSERT INTO runner_sessions (
+          runner_ref, runner_kind, repo, workspace_handle, workspace_dir,
+          workspace_branch, workspace_read_only, state_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(runner_ref) DO UPDATE SET
+          runner_kind = excluded.runner_kind,
+          repo = excluded.repo,
+          workspace_handle = excluded.workspace_handle,
+          workspace_dir = excluded.workspace_dir,
+          workspace_branch = excluded.workspace_branch,
+          workspace_read_only = excluded.workspace_read_only,
+          state_json = excluded.state_json,
+          updated_at = excluded.updated_at
+      `)
+      .run(
+        runnerRef,
+        row.runnerKind,
+        row.repo,
+        row.workspaceHandle,
+        row.workspaceDir,
+        row.workspaceBranch ?? null,
+        row.workspaceReadOnly ? 1 : 0,
+        row.stateJson,
+        now,
+        now,
+      );
+    return runnerRef;
   }
 
   archiveSession(sessionKey: string): void {
     this.db
       .prepare("UPDATE sessions SET state = 'archived', updated_at = ? WHERE session_key = ?")
       .run(Date.now(), sessionKey);
+  }
+
+  // -- bot message anchors -------------------------------------------------
+
+  rememberBotMessage(messageId: string, chatId: string, sessionKey: string): void {
+    const now = Date.now();
+    this.db
+      .prepare("INSERT OR REPLACE INTO bot_messages (message_id, chat_id, session_key, ts) VALUES (?, ?, ?, ?)")
+      .run(messageId, chatId, sessionKey, now);
+    // 引用回复通常紧邻发生；保留 7 天足够支持重启后的自然追问，同时限制增长。
+    this.db.prepare("DELETE FROM bot_messages WHERE ts < ?").run(now - 7 * 24 * 3600_000);
+  }
+
+  isBotMessage(messageId: string | undefined, chatId: string): boolean {
+    if (!messageId) return false;
+    const row = this.db
+      .prepare("SELECT 1 AS found FROM bot_messages WHERE message_id = ? AND chat_id = ?")
+      .get(messageId, chatId) as { found?: number } | undefined;
+    return row?.found === 1;
   }
 
   // -- audit ---------------------------------------------------------------

@@ -128,9 +128,17 @@ export async function runDoctor(opts: { config: string; online?: boolean }): Pro
           detail: `远程工作区通常只支持 HTTPS 仓库地址(当前 ${repo.url})`,
         });
       }
-      if (repo.chats.length === 0) {
-        push({ name: `repo ${repo.name} 授权群`, ok: false, detail: "chats 为空:群聊不可用(单聊仍可用)" });
-      }
+      push({
+        name: `repo ${repo.name} 群聊访问`,
+        ok: true,
+        detail: repo.group_open
+          ? repo.chats.length > 0
+            ? `默认开放只读咨询;${repo.chats.length} 个群设为该项目的路由提示`
+            : "默认开放只读咨询;无需绑定群聊"
+          : repo.chats.length > 0
+            ? `已收紧;仅 ${repo.chats.length} 个登记群及显式授权用户可访问`
+            : "已收紧;仅显式授权用户可访问",
+      });
     }
 
     // 飞书凭据(在线)

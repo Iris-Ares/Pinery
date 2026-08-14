@@ -9,14 +9,15 @@ lark:
 
 repos:
   - name: order-service             # 标识名(字母数字与 ._-)
+    aliases: [订单, order]          # 可选:聊天里可用的项目简称;多项目意图路由使用
     url: git@github.com:org/order.git   # 建议只读 deploy key 的 ssh 地址
     # path: /srv/repos/order        # 可选:已有本地 checkout 时指定;缺省自动 clone 到 <workspace.root>/repos/<name>
-    chats:                          # L0 授权群(答案可见范围 = 群,PRD §3.5)
-      - oc_xxxxxxxxxxxxxxxx
-    permissions:                    # user × level 显式授权(open_id)
-      - { user: ou_alice, level: 2 }   # L2 交付:可确认创建 PR(M3)
-      - { user: ou_bob,   level: 1 }   # L1 编写:可派发编码任务(M2)
-    p2p_open: true                  # 允许任何能私聊到 bot 的人 L0 提问(可见性由飞书后台控制)
+    # chats: [oc_xxxxxxxxxxxxxxxx]  # 可选:把群设为该项目的默认路由提示,不是访问白名单
+    # permissions:                  # 可选:为指定用户提升或固定能力级别(open_id)
+    #   - { user: ou_alice, level: 2 } # L2 交付:可确认创建 PR(M3)
+    group_open: true                # 默认:任何能在群里 @ bot 的人可做 L0 只读咨询
+    p2p_open: true                  # 默认:任何能私聊到 bot 的人可做 L0 只读咨询
+    # 需要收紧时才设 group_open/p2p_open: false,并通过 chats/permissions 放行
 
 # ── 模型接入:三种形态,任选其一 ─────────────────────────────────────────
 # pi-ai 内置 26 个 provider 适配:anthropic / openai / google / deepseek /

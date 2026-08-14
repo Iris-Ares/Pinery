@@ -47,6 +47,8 @@
 - 🏠 **自托管,代码不出内网** — 单容器部署,飞书长连接接入,无需公网回调地址
 - ☁️ **或整机上云** — 同一套核心代码可全托管在 Cloudflare(Agents SDK + Computer + AI Gateway),免自有服务器
 - 🔌 **多模型自由切换** — pi-ai 26+ provider 开箱即用,支持网关改道与本地模型(vLLM / Ollama)
+- 🧠 **沿用仓库 Agent 规范** — 自动加载根 `AGENTS.md`,发现嵌套规则与 `.agents/skills`,按任务选择并完整读取相关 Skill
+- 💬 **自然项目路由** — 单项目直接问,多项目按名称/别名/会话意图判断,不确定时由 Bot 主动澄清
 - 🎚️ **能力分级授权** — L0 只读 → L3 危险操作逐级放权,user × repo × level 硬判鉴权
 - 🧩 **双窄接口可替换** — AgentRunner 与 WorkspaceProvider 皆是窄接口,pi 只是默认实现,harness 与工作区后端都欢迎社区替代
 - 🛡️ **纵深安全** — 工具白名单、路径围栏、secret 出站过滤、egress 白名单代理、审计落库
@@ -151,7 +153,7 @@ base_url / api / headers 覆写会声明式生成 pi 的 `models.json` 注册文
 ```mermaid
 flowchart TD
     FS["📡 飞书事件订阅<br/>长连接 · 免公网回调"] --> GW["🚪 Gateway<br/>意图门控 · 限流 · user × repo × level 鉴权"]
-    GW --> SR["🧵 会话路由<br/>session_key = 单聊 chat_id / 群聊话题 root_id(同 key 串行)"]
+    GW --> SR["💬 会话路由<br/>单聊 chat_id / 群聊 chat_id / 显式话题 thread_id(同 key 串行)"]
     SR --> RUN
     subgraph RUN["🤖 AgentRunner — 窄接口 · 可替换实现(默认 pi SDK)"]
         direction LR
@@ -167,6 +169,7 @@ flowchart TD
 
 - **AgentRunner 窄接口是一等公民**:pi 是实现细节不是产品身份,欢迎社区实现 `runner-claude-code` 等替代 harness(配置 `runner.kind` 即可切换)。
 - **WorkspaceProvider 同构可替换**:工作区后端也是窄接口——本地 worktree 与云沙箱(Cloudflare Computer)共用同一套策略引擎与会话模型,切换只改 `workspace.provider`。
+- **群聊主流优先**:Bot 仅在被 @ 或用户直接回复 Bot 时参与;每次被 @ 都分页拉取飞书历史,按当前问题、回复链与邻接消息动态筛选上下文,旧但相关的讨论不会被固定“最近 N 条”窗口丢掉。普通回复沿用已绑定 runner 会话;只有用户已经进入显式话题时才留在话题内。
 - **回复通道收口在 adapter**:agent 没有发消息的工具;lark-cli 只读飞书文档。
 - **飞书卡片只做执行授权**,code review 完全留在 Git 平台——Pinery 不试图取代 Git 平台的任何环节,只负责把任务送进去。
 - **glossary 冷启动自动化**:`pinery bootstrap` 让 agent 自扫仓库生成术语表草稿,工程师只 review 修正。
@@ -219,7 +222,7 @@ pinery/
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M1** | Docker + adapter + runner-pi(L0)+ 单 repo + 话题会话 + 分层卡片 + bootstrap | ✅ 代码就绪,验收=自有项目跑通「提问→可信答案」 |
+| **M1** | Docker + adapter + runner-pi(L0)+ 单 repo + 连续群聊会话 + 分层卡片 + bootstrap | ✅ 代码就绪,验收=自有项目跑通「提问→可信答案」 |
 | **M2** | L1 编码任务(worktree + 测试执行)+ 多轮强化 + 20 题盲评 | 🚧 下一步(盲评达标才对非技术用户放量) |
 | **M3** | L2 PR 闭环 + 群聊完整 + lark-cli/PRD 对照 + 文件级依赖缓存 | 📋 规划 |
 | **M4** | 评估闭环 + 手动 FAQ + 多 repo + 轨迹页 + 开源发布 | 📋 规划 |

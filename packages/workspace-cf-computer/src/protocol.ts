@@ -20,7 +20,13 @@ export const WORKSPACE_ROOT = "/workspace";
 
 export type WireRequest =
   | { op: "stat"; path: string }
-  | { op: "readFile"; path: string; encoding?: "utf8" | "base64" }
+  | {
+      op: "readFile";
+      path: string;
+      encoding?: "utf8" | "base64";
+      /** 数据源一侧的读取上限;仓库指令预加载用,缺省保持原有完整读取语义 */
+      maxBytes?: number;
+    }
   | { op: "writeFile"; path: string; content: string; encoding?: "utf8" | "base64" }
   | { op: "mkdir"; path: string }
   | { op: "rm"; path: string; recursive?: boolean }
@@ -73,7 +79,11 @@ export interface WireInfo {
 
 export type WireResultMap = {
   stat: WireStatResult;
-  readFile: { content: string; encoding: "utf8" | "base64" };
+  readFile: {
+    content: string;
+    encoding: "utf8" | "base64";
+    truncated?: boolean;
+  };
   writeFile: Record<string, never>;
   mkdir: Record<string, never>;
   rm: Record<string, never>;

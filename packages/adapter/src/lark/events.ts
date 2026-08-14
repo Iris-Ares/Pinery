@@ -7,8 +7,14 @@ export interface IncomingMessage {
   chatId: string;
   chatType: "p2p" | "group";
   messageId: string;
-  /** 话题根消息 id(在话题内发言时存在) */
+  /** 话题根消息 id 或普通回复链根消息 id */
   rootId?: string;
+  /** 显式话题 id；普通群聊引用回复没有该字段 */
+  threadId?: string;
+  /** 被直接回复的上一条消息 id */
+  parentId?: string;
+  /** 飞书消息创建时间(毫秒时间戳字符串) */
+  createTime?: string;
   senderOpenId: string;
   /** 已剥离 @ 提及、去首尾空白的正文 */
   text: string;
@@ -29,7 +35,9 @@ export interface RawReceiveEvent {
   message?: {
     message_id?: string;
     root_id?: string;
+    thread_id?: string;
     parent_id?: string;
+    create_time?: string;
     chat_id?: string;
     chat_type?: string;
     message_type?: string;
@@ -105,6 +113,9 @@ export function normalizeMessage(
     chatType,
     messageId: msg.message_id,
     rootId: msg.root_id || undefined,
+    threadId: msg.thread_id || undefined,
+    parentId: msg.parent_id || undefined,
+    createTime: msg.create_time || undefined,
     senderOpenId,
     text: stripMentions(rawText, msg.mentions),
     mentionsBot,

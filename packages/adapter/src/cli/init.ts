@@ -51,7 +51,7 @@ export async function runInit(opts: { config: string; force?: boolean }): Promis
 
   const chatsRaw = await ask(
     p.text({
-      message: "授权群 chat_id(可选,逗号分隔;不知道可以留空,之后补)",
+      message: "默认项目群 chat_id(可选,仅多项目路由需要;逗号分隔)",
       defaultValue: "",
       placeholder: "oc_xxx,oc_yyy",
     }),
@@ -66,7 +66,7 @@ export async function runInit(opts: { config: string; force?: boolean }): Promis
 
   const config = {
     lark: { app_id: appId.trim(), app_secret: "${LARK_APP_SECRET}", endpoint },
-    repos: [{ name: repoName.trim(), url: repoUrl.trim(), chats, permissions: [] }],
+    repos: [{ name: repoName.trim(), url: repoUrl.trim(), chats }],
     model,
     limits: { session_max_turns: 20, task_timeout_min: 30 },
     workspace: { root: "~/.pinery" },

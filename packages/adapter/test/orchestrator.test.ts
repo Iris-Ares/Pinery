@@ -80,9 +80,9 @@ describe("Orchestrator", () => {
     o.handle(msg());
     await drain(o);
 
-    // ack 卡片以话题形式回复
+    // ack 卡片留在群聊主消息流,不主动创建话题
     expect(lark.sent[0]?.kind).toBe("reply");
-    expect(lark.sent[0]?.inThread).toBe(true);
+    expect(lark.sent[0]?.inThread).toBe(false);
 
     // 最终 patch 是答案卡片,且 secret 已脱敏
     const final = JSON.stringify(lark.patches.at(-1));
@@ -97,8 +97,8 @@ describe("Orchestrator", () => {
     expect(qa[0]?.answer).not.toContain("AKIAIOSFODNN7EXAMPLE");
     expect(qa[0]?.confidence).toBe("high");
 
-    // 会话映射(群聊话题:主流消息 id 作为 root)
-    const session = storage.getSession("thread:om_q");
+    // 会话映射(群聊主消息流共用 chat room)
+    const session = storage.getSession("group:oc_g");
     expect(session?.runner_ref).toBe("/tmp/s.jsonl");
     expect(session?.turns).toBe(4);
     expect(session?.summary).toContain("上一轮结论");
@@ -167,11 +167,11 @@ describe("Orchestrator", () => {
     const o = new Orchestrator({ cfg, storage, runner, lark });
 
     o.handle(msg({ messageId: "om_1" }));
-    o.handle(msg({ messageId: "om_2", rootId: "om_1", mentionsBot: false, text: "追问" }));
+    o.handle(msg({ messageId: "om_2", text: "@Pinery 追问" }));
     o.handle(msg({ messageId: "om_3", text: "help" }));
     await drain(o);
 
-    // 同 thread 两个任务严格串行
+    // 同 group room 两个任务严格串行
     expect(order).toEqual(["start", "end", "start", "end"]);
     // help 立即回复(不进队列):sent 里有三条 reply(2 个 ack + 1 个 help)
     expect(lark.sent.filter((s) => s.kind === "reply")).toHaveLength(3);
@@ -192,7 +192,7 @@ describe("Orchestrator", () => {
     const o = new Orchestrator({ cfg, storage, runner, lark });
     o.handle(msg({ messageId: "om_1" }));
     await drain(o);
-    o.handle(msg({ messageId: "om_2", rootId: "om_1", mentionsBot: false, text: "那部分退款呢?" }));
+    o.handle(msg({ messageId: "om_2", parentId: "om_out_1", mentionsBot: false, text: "那部分退款呢?" }));
     await drain(o);
     expect(resumes).toEqual([undefined, "/tmp/s.jsonl"]);
     storage.close();
@@ -226,7 +226,7 @@ describe("Orchestrator", () => {
     await drain(o);
 
     const failed = JSON.stringify(lark.patches.at(-1));
-    expect(failed).toContain("工作区准备失败");
+    expect(failed).toContain("项目代码准备失败");
     expect(failed).toContain("cloudflare endpoint unreachable");
     expect(failed).not.toContain("调查中");
     expect(storage.listQa()).toHaveLength(0);
@@ -256,7 +256,7 @@ describe("Orchestrator", () => {
     expect(final).toContain("取消");
     expect(final).not.toContain("会退款"); // 不得把片段呈现为答案
     expect(storage.listQa()).toHaveLength(0); // 不污染 golden set
-    expect(storage.getSession("thread:om_q")).toBeUndefined(); // 不写入会话记忆
+    expect(storage.getSession("group:oc_g")).toBeUndefined(); // 不写入会话记忆
     storage.close();
   });
 
@@ -342,7 +342,7 @@ describe("Orchestrator", () => {
     expect(final).not.toContain("AKIAIOSFODNN7EXAMPLE"); // 仍过 secret 过滤
     // 不污染 golden set 与会话记忆
     expect(storage.listQa()).toHaveLength(0);
-    expect(storage.getSession("thread:om_q")).toBeUndefined();
+    expect(storage.getSession("group:oc_g")).toBeUndefined();
     storage.close();
   });
 
@@ -362,13 +362,14 @@ describe("Orchestrator", () => {
     expect(sent).not.toContain("调查中");
   });
 
-  it("unauthorized chat gets denied card", async () => {
+  it("an unbound chat can use the only project by default", async () => {
     const storage = new Storage(":memory:");
     const lark = new FakeLark();
     const o = new Orchestrator({ cfg, storage, runner: fakeRunner(() => okResult), lark });
     o.handle(msg({ chatId: "oc_unknown" }));
     await drain(o);
-    expect(JSON.stringify(lark.sent[0]?.card)).toContain("没有权限");
+    expect(JSON.stringify(lark.sent[0]?.card)).toContain("调查中");
+    expect(JSON.stringify(lark.patches.at(-1))).toContain("会退款");
     storage.close();
   });
 });

@@ -12,6 +12,9 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("只读模式");
     expect(p).toContain("## 结论");
     expect(p).toContain("数据与指令的边界");
+    expect(p).toContain("多个合理指代");
+    expect(p).toContain("已经成功从飞书动态读取");
+    expect(p).toContain("直接自然");
     expect(p).toContain("order");
   });
 
@@ -43,5 +46,25 @@ describe("buildSystemPrompt", () => {
     writeFileSync(join(dir, ".pinery", "investigate.md"), "# 自定义调查规范\n只查 docs 目录。");
     const p = buildSystemPrompt({ repoName: "order", level: 0, kind: "investigate", workspaceDir: dir });
     expect(p).toContain("自定义调查规范");
+  });
+
+  it("injects repository guidance and requires full on-demand skill reads", () => {
+    const p = buildSystemPrompt({
+      repoName: "order",
+      level: 0,
+      kind: "investigate",
+      workspaceDir: ws(),
+      repositoryGuidance: {
+        rootInstructions: { content: "# Maintainer rules\nUse the service owner.", truncated: false },
+        nestedInstructionPaths: ["services/api/AGENTS.md"],
+        skills: [{ name: "service-router", description: "Route service tasks", path: ".agents/skills/service-router/SKILL.md" }],
+        warnings: [],
+      },
+    });
+    expect(p).toContain("Use the service owner");
+    expect(p).toContain("services/api/AGENTS.md");
+    expect(p).toContain(".agents/skills/service-router/SKILL.md");
+    expect(p).toContain("完整读取对应 `SKILL.md` 到 EOF");
+    expect(p).toContain("不能扩大权限");
   });
 });

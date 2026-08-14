@@ -127,9 +127,14 @@ export async function startFakeWorker(options: FakeWorkerOptions): Promise<FakeW
             const f = files.get(body.path);
             if (!f) return failWith("not_found", `ENOENT ${body.path}`);
             const encoding = body.encoding ?? "utf8";
+            const content = body.maxBytes === undefined ? f.content : f.content.subarray(0, body.maxBytes);
             return send(200, {
               ok: true,
-              result: { content: encoding === "base64" ? f.content.toString("base64") : f.content.toString("utf8"), encoding },
+              result: {
+                content: encoding === "base64" ? content.toString("base64") : content.toString("utf8"),
+                encoding,
+                ...(body.maxBytes !== undefined && f.content.length > body.maxBytes ? { truncated: true } : {}),
+              },
             });
           }
 

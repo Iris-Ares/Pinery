@@ -30,6 +30,8 @@ export interface CfComputerProviderOptions extends Omit<CfComputerClientOptions,
   client?: WorkspaceRpc;
   /** exec 后端 id:worker-shell(免容器,快)| container(真 Linux) */
   execBackend?: string;
+  /** 已水合的只读快照 workspace id;设置后所有 L0 会话共享它 */
+  sharedSnapshotId?: string;
   /** clone 深度(0 = 完整克隆);默认 1 */
   cloneDepth?: number;
   execTimeoutMs?: number;
@@ -53,6 +55,9 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   private readonly preparing = new Map<string, Promise<void>>();
 
   constructor(private readonly options: CfComputerProviderOptions) {
+    if (options.sharedSnapshotId && !/^s-[A-Za-z0-9._-]{1,126}$/.test(options.sharedSnapshotId)) {
+      throw new Error("sharedSnapshotId 必须以 s- 开头,且只含安全字符(最长 128)");
+    }
     if (options.client) {
       this.client = options.client;
     } else {
@@ -64,7 +69,7 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
   }
 
   acquireSession(repo: RepoConfig, sessionKey: string): Promise<ProvidedWorkspace> {
-    return this.acquire(repo, `s-${workspaceSlug(repo.name)}-${hashId(sessionKey)}`, true);
+    return this.acquire(repo, this.options.sharedSnapshotId ?? `s-${workspaceSlug(repo.name)}-${hashId(sessionKey)}`, true);
   }
 
   acquireTask(repo: RepoConfig, taskId: string): Promise<ProvidedWorkspace> {
@@ -181,6 +186,7 @@ export function createWorkspaceProvider(cfg: PineryConfig): WorkspaceProvider {
     endpoint,
     token,
     execBackend: o["exec_backend"] ?? "worker-shell",
+    sharedSnapshotId: o["shared_snapshot_id"],
     cloneDepth: o["clone_depth"] ? Number(o["clone_depth"]) : 1,
     execTimeoutMs: o["exec_timeout_ms"] ? Number(o["exec_timeout_ms"]) : undefined,
     // 远程后端不跑本地 pull loop,刷新节奏沿用同一个配置项

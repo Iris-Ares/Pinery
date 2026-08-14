@@ -37,6 +37,7 @@
   "scripts": {
     "build": "node packages/skills/scripts/embed.mjs && tsc -b",
     "clean": "tsc -b --clean && rm -rf packages/*/dist",
+    "source:upload": "bun scripts/upload-source-snapshot.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -46,6 +47,7 @@
     "vitest": "^4.1.10"
   },
   "patchedDependencies": {
-    "@mariozechner/pi-coding-agent@0.73.1": "patches/@mariozechner%2Fpi-coding-agent@0.73.1.patch"
+    "@mariozechner/pi-coding-agent@0.73.1": "patches/@mariozechner%2Fpi-coding-agent@0.73.1.patch",
+    "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch"
   }
 }

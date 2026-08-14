@@ -21,6 +21,8 @@ export interface ToolOperationsBundle {
   find?: unknown;
   ls?: unknown;
   bash?: unknown;
+  /** 仓库级指令发现所需的有界读取能力(AGENTS.md / skill catalog) */
+  repositoryContext?: unknown;
 }
 
 export interface ProvidedWorkspace extends RunnerWorkspace {

@@ -99,6 +99,12 @@ export interface AnswerMeta {
   costUsd?: number;
   redacted?: boolean;
   truncated?: boolean;
+  groupContext?: {
+    status: "loaded" | "empty" | "error";
+    selected: number;
+    candidates: number;
+    code?: number;
+  };
 }
 
 const CONFIDENCE_TEMPLATE: Record<ConfidenceLevel, string> = {
@@ -121,12 +127,19 @@ export function answerCard(question: string, answer: LayeredAnswer, meta: Answer
   }
 
   const metaBits = [
-    `repo:${meta.repo}${meta.headShort ? `@${meta.headShort}` : ""}`,
+    `项目:${meta.repo}${meta.headShort ? `@${meta.headShort}` : ""}`,
     `${Math.round(meta.durationMs / 1000)}s`,
     `${meta.turns} 轮`,
   ];
   if (meta.model) metaBits.push(meta.model);
   if (meta.costUsd !== undefined && meta.costUsd > 0) metaBits.push(`$${meta.costUsd.toFixed(4)}`);
+  if (meta.groupContext?.status === "loaded") {
+    metaBits.push(`群上下文:${meta.groupContext.selected}/${meta.groupContext.candidates} 条`);
+  } else if (meta.groupContext?.status === "empty") {
+    metaBits.push(`群上下文:0/${meta.groupContext.candidates} 条`);
+  } else if (meta.groupContext?.status === "error") {
+    metaBits.push(`群上下文:不可用${meta.groupContext.code !== undefined ? `(${meta.groupContext.code})` : ""}`);
+  }
   if (meta.redacted) metaBits.push("⚠️ 输出含敏感内容已脱敏");
   if (meta.truncated) metaBits.push("已截断");
 
@@ -155,15 +168,24 @@ export function deniedCard(reason: string): Card {
   return baseCard("🔒 没有权限", "grey", [md(reason)]);
 }
 
+export function projectChoiceCard(projects: string[], reason: string): Card {
+  const choices = projects.map((project) => `- \`${project}\``).join("\n");
+  return baseCard("🌲 你指的是哪个项目?", "turquoise", [
+    md(`${reason}\n\n${choices}\n\n请把项目名放在问题开头再发一次,例如:\`项目名: 这个功能如何实现?\``),
+  ]);
+}
+
 export function helpCard(info: { repo?: string; levelName?: string }): Card {
   const lines = [
     "**我是 Pinery,长在飞书里的工程同事。**",
     "",
     "- 直接提问,例如:「下单超时会自动退款吗?」",
     "- 群里 @ 我提问,回复会收敛到话题;话题内追问无需再 @",
-    "- `status` 查看当前仓库与会话状态",
+    "- `status` 查看当前项目与会话状态",
     "",
-    info.repo ? `当前仓库:\`${info.repo}\`${info.levelName ? " · 你的级别:" + info.levelName : ""}` : "当前会话未绑定仓库,请联系管理员在 pinery.yaml 登记本群。",
+    info.repo
+      ? `当前项目:\`${info.repo}\``
+      : "直接提问即可;如果同时配置了多个项目,请在问题中带上项目名。",
   ];
   return baseCard("🌲 Pinery", "turquoise", [md(lines.join("\n"))]);
 }
@@ -180,7 +202,7 @@ export interface StatusInfo {
 
 export function statusCard(info: StatusInfo): Card {
   const lines = [
-    `**仓库** \`${info.repo}\`${info.headShort ? ` @ \`${info.headShort}\`${info.headTime ? `(${info.headTime})` : ""}` : ""}`,
+    `**项目** \`${info.repo}\`${info.headShort ? ` @ \`${info.headShort}\`${info.headTime ? `(${info.headTime})` : ""}` : ""}`,
     `**模型** ${info.model}`,
     `**会话** ${info.sessionState === "active" ? `进行中,已 ${info.sessionTurns ?? 0} 轮` : "无活跃会话"}`,
     `**队列** ${info.queueLength} 个任务排队中`,

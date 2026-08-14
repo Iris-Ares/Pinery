@@ -73,6 +73,27 @@ export function createRemoteOperations(options: RemoteOperationsOptions): Remote
   };
 
   return {
+    repositoryContext: {
+      readText: async (absolutePath, maxBytes) => {
+        const res = await call(workspaceId, {
+          op: "readFile",
+          path: absolutePath,
+          encoding: "utf8",
+          maxBytes,
+        });
+        return { text: res.content, truncated: res.truncated ?? false };
+      },
+      find: async (pattern, cwd, limit) => {
+        const res = await call(workspaceId, {
+          op: "find",
+          path: cwd,
+          pattern,
+          limit,
+        });
+        return res.paths;
+      },
+    },
+
     read: {
       readFile: readBuffer,
       access: assertAccessible,

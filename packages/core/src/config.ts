@@ -15,12 +15,16 @@ const permissionEntrySchema = z.object({
 
 const repoSchema = z.object({
   name: z.string().regex(/^[A-Za-z0-9._-]+$/, "repo name 仅允许字母数字与 ._-"),
+  /** 聊天中的自然称呼/简称;用于意图路由,不要求用户理解 workspace */
+  aliases: z.array(z.string().min(1)).default([]),
   url: z.string().min(1),
   /** 本地 checkout 路径;缺省 <workspace.root>/repos/<name> */
   path: z.string().optional(),
-  /** L0 授权群 chat_id 列表 */
+  /** 可选的群默认项目提示;不是默认访问白名单 */
   chats: z.array(z.string()).default([]),
   permissions: z.array(permissionEntrySchema).default([]),
+  /** 群聊默认开放 L0;关闭后只有 chats 登记群或显式 permissions 用户可访问 */
+  group_open: z.boolean().default(true),
   /** 允许任何能私聊到 bot 的用户 L0 提问(组织内可见性由飞书后台控制) */
   p2p_open: z.boolean().default(true),
 });
@@ -203,19 +207,80 @@ export function repoCheckoutDir(cfg: PineryConfig, repo: RepoConfig): string {
   return join(resolvePaths(cfg).reposDir, repo.name);
 }
 
-/** 按 chat 定位 repo(M1 单 repo:群未登记时回退唯一 repo 的 p2p 语义) */
-export function repoForChat(cfg: PineryConfig, chatId: string, chatType: "p2p" | "group"): RepoConfig | undefined {
+/** 按 chat 获取可选默认项目;单项目直接返回,不把聊天绑定暴露为产品概念。 */
+export function repoForChat(
+  cfg: PineryConfig,
+  chatId: string,
+  _chatType: "p2p" | "group",
+): RepoConfig | undefined {
   const byChat = cfg.repos.find((r) => r.chats.includes(chatId));
   if (byChat) return byChat;
-  if (chatType === "p2p" && cfg.repos.length === 1) return cfg.repos[0];
+  if (cfg.repos.length === 1) return cfg.repos[0];
   return undefined;
+}
+
+export interface RepoIntentResolution {
+  repo?: RepoConfig;
+  candidates: RepoConfig[];
+  source: "intent" | "session" | "chat-default" | "single" | "ambiguous";
+}
+
+/**
+ * 聊天项目路由:明确名称/别名优先,然后延续话题项目、群默认项目、单项目。
+ * 多项目未命中或多义时不猜,把候选交给上层生成澄清卡片。
+ */
+export function resolveRepoIntent(
+  cfg: PineryConfig,
+  input: { chatId: string; text: string; activeRepo?: string },
+): RepoIntentResolution {
+  const matches = cfg.repos.filter((repo) => repoIntentTerms(repo).some((term) => textMentionsTerm(input.text, term)));
+  if (matches.length === 1) return { repo: matches[0], candidates: matches, source: "intent" };
+  if (matches.length > 1) return { candidates: matches, source: "ambiguous" };
+
+  if (input.activeRepo) {
+    const active = cfg.repos.find((repo) => repo.name === input.activeRepo);
+    if (active) return { repo: active, candidates: [active], source: "session" };
+  }
+
+  const chatDefaults = cfg.repos.filter((repo) => repo.chats.includes(input.chatId));
+  if (chatDefaults.length === 1) {
+    return { repo: chatDefaults[0], candidates: chatDefaults, source: "chat-default" };
+  }
+  if (chatDefaults.length > 1) return { candidates: chatDefaults, source: "ambiguous" };
+
+  if (cfg.repos.length === 1) {
+    return { repo: cfg.repos[0]!, candidates: [cfg.repos[0]!], source: "single" };
+  }
+  return { candidates: cfg.repos, source: "ambiguous" };
+}
+
+export function repoDisplayName(repo: RepoConfig): string {
+  return repo.aliases[0] ?? repo.name;
+}
+
+function repoIntentTerms(repo: RepoConfig): string[] {
+  const urlName = repo.url
+    .replace(/[?#].*$/, "")
+    .replace(/\/$/, "")
+    .split("/")
+    .at(-1)
+    ?.replace(/\.git$/i, "");
+  return [...new Set([repo.name, ...repo.aliases, urlName].filter((term): term is string => !!term && term.length >= 2))];
+}
+
+function textMentionsTerm(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (/^[A-Za-z0-9._-]+$/.test(term)) {
+    return new RegExp(`(^|[^A-Za-z0-9])${escaped}(?=$|[^A-Za-z0-9])`, "i").test(text);
+  }
+  return text.toLocaleLowerCase().includes(term.toLocaleLowerCase());
 }
 
 /**
  * 解析用户在 repo 上的能力级别(PRD §3.5 鉴权规则)。
  * 返回 undefined = 无权限。
  * - 显式 permissions 条目优先
- * - 群聊(chat 已登记):默认 L0(答案可见范围 = 群)
+ * - 群聊默认开放 L0;group_open=false 时 chats 才成为限制
  * - 单聊:p2p_open 时默认 L0
  */
 export function resolveUserLevel(
@@ -226,7 +291,7 @@ export function resolveUserLevel(
 ): PermissionLevel | undefined {
   const entry = repo.permissions.find((p) => p.user === userId);
   if (entry && isPermissionLevel(entry.level)) return entry.level;
-  if (chatType === "group" && chatRegistered) return 0;
+  if (chatType === "group" && (repo.group_open || chatRegistered)) return 0;
   if (chatType === "p2p" && repo.p2p_open) return 0;
   return undefined;
 }

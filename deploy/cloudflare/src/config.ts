@@ -14,6 +14,8 @@ export interface PineryWorkerEnv {
   PINERY_TOKEN?: string;
   /** pinery.yaml 全文(YAML 字符串) */
   PINERY_CONFIG?: string;
+  /** 固定 R2 快照前缀;Agent 冒烟从末段取得预期 commit */
+  PINERY_SOURCE_PREFIX?: string;
   [key: string]: unknown;
 }
 

@@ -4,6 +4,17 @@ export {
   safeEqualStr,
   verifyLarkSignature,
 } from "./crypto.js";
-export { parseWebhookBody, type LarkEventHeader, type ParsedLarkWebhook } from "./webhook.js";
+export {
+  parseWebhookBody,
+  verifyLarkWebhookSignature,
+  type LarkEventHeader,
+  type LarkWebhookSignatureInput,
+  type ParsedLarkWebhook,
+} from "./webhook.js";
 export { LarkApiError, TenantTokenManager, larkApiBase, type LarkDomain, type TenantTokenManagerOptions } from "./token.js";
-export { LarkFetchClient, type LarkFetchClientOptions } from "./client.js";
+export {
+  LarkFetchClient,
+  type LarkFetchClientOptions,
+  type LarkMessageItem,
+  type LarkMessagePage,
+} from "./client.js";

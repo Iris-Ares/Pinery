@@ -1,7 +1,8 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { PineryConfig } from "@pinery/core";
 import { cardJson, type Card } from "./cards.js";
-import { normalizeMessage, type IncomingMessage, type RawReceiveEvent } from "./events.js";
+import { extractText, normalizeMessage, type IncomingMessage, type RawReceiveEvent } from "./events.js";
+import type { ConversationMessagePage } from "./messenger.js";
 
 /**
  * 飞书服务封装:长连接事件接入(PRD §8-Q10:默认 WebSocket,免公网回调)
@@ -62,7 +63,7 @@ export class LarkService {
     return res.data?.message_id;
   }
 
-  /** 回复消息(inThread=true 时开话题/回话题,PRD §3.5 一切收敛到话题) */
+  /** 回复消息；仅用户已经在显式话题里时传 inThread=true，主流不主动开话题。 */
   async replyCard(messageId: string, card: Card, inThread: boolean): Promise<string | undefined> {
     const res = await this.client.im.v1.message.reply({
       path: { message_id: messageId },
@@ -81,5 +82,42 @@ export class LarkService {
       path: { message_id: messageId },
       data: { content: cardJson(card) },
     });
+  }
+
+  async listMessagesPage(
+    container: { type: "chat" | "thread"; id: string },
+    options: { pageSize: number; pageToken?: string },
+  ): Promise<ConversationMessagePage> {
+    const res = await this.client.im.v1.message.list({
+      params: {
+        container_id_type: container.type,
+        container_id: container.id,
+        sort_type: "ByCreateTimeDesc",
+        page_size: Math.max(1, Math.min(50, Math.trunc(options.pageSize))),
+        ...(options.pageToken ? { page_token: options.pageToken } : {}),
+        with_sender_name: true,
+      },
+    });
+    const messages: ConversationMessagePage["messages"] = [];
+    for (const item of res.data?.items ?? []) {
+      if (item.deleted || item.sender?.sender_type !== "user") continue;
+      const text = extractText(item.msg_type ?? "", item.body?.content ?? "");
+      if (!item.message_id || !item.sender?.id || text === undefined) continue;
+      messages.push({
+        messageId: item.message_id,
+        senderId: item.sender.id,
+        ...(item.sender.sender_name ? { senderName: item.sender.sender_name } : {}),
+        text,
+        ...(item.create_time ? { createTime: item.create_time } : {}),
+        ...(item.parent_id ? { parentId: item.parent_id } : {}),
+        ...(item.root_id ? { rootId: item.root_id } : {}),
+        ...(item.thread_id ? { threadId: item.thread_id } : {}),
+      });
+    }
+    return {
+      messages,
+      hasMore: res.data?.has_more === true,
+      ...(res.data?.page_token ? { pageToken: res.data.page_token } : {}),
+    };
   }
 }

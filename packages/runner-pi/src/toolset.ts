@@ -158,11 +158,25 @@ export interface RemoteToolOperations {
   ls?: LsToolOptions["operations"];
   bash?: BashToolOptions["operations"];
   /**
+   * Runner 启动前的仓库指令发现。与模型可调用的 read/find 工具分开:
+   * 这里的文本读取必须由 provider 在数据源一侧做字节上限,避免无盘 Worker
+   * 为了读取一个异常大的指令文件而把整个文件搬进内存。
+   */
+  repositoryContext?: RepositoryContextOperations;
+  /**
    * 服务端搜索。提供时**整体替换** pi 的 grep 工具:
    * pi 内置 grep 无条件在本地 spawn ripgrep(注入的 GrepOperations 仅用于
    * 取上下文行),远程工作区上会搜错文件系统。见 remote-grep.ts。
    */
   grepSearch?: RemoteGrepSearch;
+}
+
+export interface RepositoryContextOperations {
+  readText: (
+    absolutePath: string,
+    maxBytes: number,
+  ) => Promise<{ text: string; truncated: boolean }>;
+  find: (pattern: string, cwd: string, limit: number) => Promise<string[]>;
 }
 
 export interface BuildToolsetOptions {

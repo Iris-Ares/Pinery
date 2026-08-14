@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { openSqlite } from "../src/sqlite-driver.js";
 import { Storage } from "../src/storage.js";
 
 describe("Storage", () => {
@@ -25,11 +26,92 @@ describe("Storage", () => {
     s.close();
   });
 
+  it("adds resume binding columns to an existing pre-migration sessions table", () => {
+    const driver = openSqlite(":memory:");
+    driver.exec(`
+      CREATE TABLE sessions (
+        session_key TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        chat_type TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        runner_ref TEXT,
+        summary TEXT,
+        state TEXT NOT NULL DEFAULT 'active',
+        turns INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    const s = new Storage(driver);
+    s.upsertSession({
+      sessionKey: "k",
+      chatId: "c",
+      chatType: "group",
+      repo: "r",
+      runnerRef: "piw:1",
+      runnerKind: "pi-workers",
+      workspaceHandle: "s-r-c",
+      workspaceReadOnly: true,
+      turns: 1,
+    });
+    expect(s.getSession("k")).toMatchObject({
+      runner_kind: "pi-workers",
+      workspace_handle: "s-r-c",
+      workspace_read_only: 1,
+    });
+    s.close();
+  });
+
   it("archives sessions", () => {
     const s = new Storage(":memory:");
     s.upsertSession({ sessionKey: "k", chatId: "c", chatType: "p2p", repo: "r", turns: 0 });
     s.archiveSession("k");
     expect(s.getSession("k")?.state).toBe("archived");
+    s.close();
+  });
+
+  it("persists runner snapshots with their sandbox/worktree binding", () => {
+    const s = new Storage(":memory:");
+    const runnerRef = s.saveRunnerSession({
+      runnerKind: "pi-workers",
+      repo: "order",
+      workspaceHandle: "s-order-chat",
+      workspaceDir: "/workspace",
+      workspaceBranch: "pinery/task-1",
+      workspaceReadOnly: false,
+      stateJson: '{"version":1}',
+    });
+    expect(runnerRef).toMatch(/^piw:/);
+    expect(s.getRunnerSession(runnerRef)).toMatchObject({
+      runner_kind: "pi-workers",
+      repo: "order",
+      workspace_handle: "s-order-chat",
+      workspace_branch: "pinery/task-1",
+      workspace_read_only: 0,
+      state_json: '{"version":1}',
+    });
+
+    expect(
+      s.saveRunnerSession({
+        runnerRef,
+        runnerKind: "pi-workers",
+        repo: "order",
+        workspaceHandle: "s-order-chat",
+        workspaceDir: "/workspace",
+        workspaceReadOnly: true,
+        stateJson: '{"version":1,"messages":[]}',
+      }),
+    ).toBe(runnerRef);
+    expect(s.getRunnerSession(runnerRef)?.workspace_read_only).toBe(1);
+    s.close();
+  });
+
+  it("remembers bot message anchors only in their original chat", () => {
+    const s = new Storage(":memory:");
+    s.rememberBotMessage("om_bot", "oc_group", "group:oc_group");
+    expect(s.isBotMessage("om_bot", "oc_group")).toBe(true);
+    expect(s.isBotMessage("om_bot", "oc_other")).toBe(false);
+    expect(s.isBotMessage(undefined, "oc_group")).toBe(false);
     s.close();
   });
 

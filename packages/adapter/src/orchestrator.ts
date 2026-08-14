@@ -1,6 +1,7 @@
 import {
   filterSecrets,
   repoCheckoutDir,
+  repoDisplayName,
   type PineryConfig,
   type RepoConfig,
   type AgentRunner,
@@ -8,11 +9,18 @@ import {
 } from "@pinery/core";
 import { RateLimiter, gate } from "./gateway.js";
 import { CANCEL_RE, runInvestigationPipeline } from "./investigation.js";
-import { deniedCard, errorCard, helpCard, statusCard, type Card } from "./lark/cards.js";
+import {
+  deniedCard,
+  errorCard,
+  helpCard,
+  projectChoiceCard,
+  statusCard,
+  type Card,
+} from "./lark/cards.js";
 import type { IncomingMessage } from "./lark/events.js";
 import type { LarkMessenger } from "./lark/messenger.js";
 import { headInfo } from "./repo-sync.js";
-import { sessionKeyFor } from "./sessions.js";
+import { replyInThreadFor, sessionKeyFor } from "./sessions.js";
 import type { Storage } from "./storage.js";
 
 // 接口本体已迁至 lark/messenger.ts(CF 形态复用);原位 re-export 保持兼容
@@ -36,6 +44,7 @@ export interface OrchestratorDeps {
 export class Orchestrator {
   private readonly queues = new Map<string, Promise<void>>();
   private readonly running = new Map<string, AbortController>();
+  private readonly routeRepos = new Map<string, string>();
   private readonly limiter: RateLimiter;
   private queued = 0;
   private active = 0;
@@ -61,7 +70,7 @@ export class Orchestrator {
       void this.safeReply(
         msg,
         errorCard(`调查未能启动:存储不可用(${detail})`, "请让管理员检查数据目录权限与磁盘空间。"),
-        msg.chatType === "group",
+        replyInThreadFor(msg),
       );
     }
   }
@@ -82,8 +91,14 @@ export class Orchestrator {
       return;
     }
 
-    const decision = gate(msg, { cfg, limiter: this.limiter, hasActiveSession });
-    const inThread = msg.chatType === "group";
+    const decision = gate(msg, {
+      cfg,
+      limiter: this.limiter,
+      hasActiveSession,
+      activeRepo: hasActiveSession ? (row?.repo ?? this.routeRepos.get(sessionKey)) : undefined,
+      repliesToBot: storage.isBotMessage(msg.parentId, msg.chatId),
+    });
+    const inThread = replyInThreadFor(msg);
 
     switch (decision.action) {
       case "ignore":
@@ -94,13 +109,28 @@ export class Orchestrator {
       case "rate_limited":
         void this.safeReply(msg, deniedCard(decision.reply), inThread);
         return;
+      case "clarify":
+        void this.safeReply(
+          msg,
+          projectChoiceCard(decision.projects, decision.reply),
+          inThread,
+        );
+        return;
       case "help":
-        void this.safeReply(msg, helpCard({ repo: decision.repo?.name, levelName: decision.levelName }), inThread);
+        void this.safeReply(
+          msg,
+          helpCard({
+            repo: decision.repo ? repoDisplayName(decision.repo) : undefined,
+            levelName: decision.levelName,
+          }),
+          inThread,
+        );
         return;
       case "status":
         void this.replyStatus(msg, decision.repo, inThread);
         return;
       case "investigate":
+        this.routeRepos.set(sessionKey, decision.repo.name);
         this.enqueue(sessionKey, () => this.runInvestigation(msg, decision.repo, decision.question));
         return;
     }
@@ -159,7 +189,7 @@ export class Orchestrator {
     await this.safeReply(
       msg,
       statusCard({
-        repo: repo.name,
+        repo: repoDisplayName(repo),
         headShort: head?.short,
         headTime: head?.time,
         model: `${cfg.model.provider}/${cfg.model.id}`,
@@ -173,7 +203,11 @@ export class Orchestrator {
 
   private async safeReply(msg: IncomingMessage, card: Card, inThread: boolean): Promise<string | undefined> {
     try {
-      return await this.deps.lark.replyCard(msg.messageId, card, inThread);
+      const messageId = await this.deps.lark.replyCard(msg.messageId, card, inThread);
+      if (messageId) {
+        this.deps.storage.rememberBotMessage(messageId, msg.chatId, sessionKeyFor(msg));
+      }
+      return messageId;
     } catch (e) {
       this.log(`[orchestrator] 回复失败:${e instanceof Error ? e.message : String(e)}`);
       return undefined;

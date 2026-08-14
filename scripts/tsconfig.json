@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "tsBuildInfoFile": "../node_modules/.cache/pinery-scripts.tsbuildinfo"
+  },
+  "include": ["*.ts"]
+}

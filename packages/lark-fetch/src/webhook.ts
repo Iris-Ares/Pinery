@@ -1,4 +1,4 @@
-import { decryptEventBody } from "./crypto.js";
+import { decryptEventBody, verifyLarkSignature } from "./crypto.js";
 
 /**
  * 飞书 webhook(「将事件发送至开发者服务器」)envelope 解析:
@@ -20,6 +20,14 @@ export type ParsedLarkWebhook =
   | { kind: "challenge"; challenge: string; token?: string }
   | { kind: "event"; eventId: string; eventType: string; header: LarkEventHeader; event: unknown }
   | { kind: "unsupported"; reason: string };
+
+export interface LarkWebhookSignatureInput {
+  encryptKey: string;
+  timestamp: string;
+  nonce: string;
+  rawBody: string;
+  signature: string;
+}
 
 interface Envelope {
   encrypt?: string;
@@ -69,4 +77,16 @@ export async function parseWebhookBody(rawBody: string, encryptKey?: string): Pr
   // v1.0 事件(uuid + event,无 schema):Pinery 只支持 v2 订阅,提示重新配置
   if (payload.uuid) return { kind: "unsupported", reason: "收到 v1.0 事件;请在飞书后台使用 v2.0 事件订阅" };
   return { kind: "unsupported", reason: "无法识别的事件结构" };
+}
+
+/**
+ * URL challenge 不属于飞书常规事件安全校验,可能不携带签名头;
+ * 其他请求仍必须使用原始请求体完成签名校验。
+ */
+export async function verifyLarkWebhookSignature(
+  parsed: ParsedLarkWebhook,
+  input: LarkWebhookSignatureInput,
+): Promise<boolean> {
+  if (parsed.kind === "challenge") return true;
+  return verifyLarkSignature(input.encryptKey, input.timestamp, input.nonce, input.rawBody, input.signature);
 }

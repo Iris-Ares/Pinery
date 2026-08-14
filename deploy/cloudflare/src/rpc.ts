@@ -33,6 +33,59 @@ function guardPath(input: string | undefined): string {
   return normalized;
 }
 
+const MAX_BOUNDED_READ_BYTES = 256 * 1024;
+
+function boundedReadLimit(input: number | undefined): number | undefined {
+	if (input === undefined) return undefined;
+	if (!Number.isInteger(input) || input < 1 || input > MAX_BOUNDED_READ_BYTES) {
+		throw new WireError(
+			"bad_request",
+			`maxBytes 必须是 1-${MAX_BOUNDED_READ_BYTES} 的整数`,
+		);
+	}
+	return input;
+}
+
+async function readBoundedBytes(
+	stream: ReadableStream<Uint8Array>,
+	limit: number,
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let truncated = false;
+	try {
+		for (;;) {
+			const next = await reader.read();
+			if (next.done) break;
+			const remaining = limit - total;
+			if (remaining <= 0) {
+				truncated = true;
+				break;
+			}
+			if (next.value.byteLength > remaining) {
+				chunks.push(next.value.subarray(0, remaining));
+				total += remaining;
+				truncated = true;
+				break;
+			}
+			chunks.push(next.value);
+			total += next.value.byteLength;
+		}
+	} finally {
+		if (truncated) await reader.cancel().catch(() => {});
+		reader.releaseLock();
+	}
+
+	const bytes = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return { bytes, truncated };
+}
+
 export async function readMarker(ws: { fs: { readFile: (p: string, e: "utf8") => Promise<string> } }): Promise<RepoMarker | undefined> {
   try {
     return JSON.parse(await ws.fs.readFile(REPO_MARKER, "utf8")) as RepoMarker;
@@ -103,21 +156,39 @@ export async function handleRpc(handle: WorkspaceHandle, workspaceId: string, re
       }
     }
 
-    case "readFile": {
-      const path = guardPath(req.path);
-      const encoding = req.encoding ?? "utf8";
-      try {
-        if (encoding === "utf8") {
-          return { content: await ws.fs.readFile(path, "utf8"), encoding: "utf8" };
-        }
-        const stream = await ws.fs.readFile(path);
-        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-        let binary = "";
-        for (const b of bytes) binary += String.fromCharCode(b);
-        return { content: btoa(binary), encoding: "base64" };
-      } catch (e) {
-        throw new WireError("not_found", `读取失败 ${path}:${(e as Error).message}`);
-      }
+		case "readFile": {
+			const path = guardPath(req.path);
+			const encoding = req.encoding ?? "utf8";
+			const maxBytes = boundedReadLimit(req.maxBytes);
+			try {
+				if (encoding === "utf8" && maxBytes === undefined) {
+					return { content: await ws.fs.readFile(path, "utf8"), encoding: "utf8" };
+				}
+				const stream = await ws.fs.readFile(path);
+				const bounded = maxBytes
+					? await readBoundedBytes(stream, maxBytes)
+					: {
+							bytes: new Uint8Array(await new Response(stream).arrayBuffer()),
+							truncated: false,
+						};
+				if (encoding === "utf8") {
+					return {
+						content: new TextDecoder().decode(bounded.bytes),
+						encoding: "utf8",
+						...(bounded.truncated ? { truncated: true } : {}),
+					};
+				}
+				let binary = "";
+				for (const b of bounded.bytes) binary += String.fromCharCode(b);
+				return {
+					content: btoa(binary),
+					encoding: "base64",
+					...(bounded.truncated ? { truncated: true } : {}),
+				};
+			} catch (e) {
+				if (e instanceof WireError) throw e;
+				throw new WireError("not_found", `读取失败 ${path}:${(e as Error).message}`);
+			}
     }
 
     case "writeFile": {

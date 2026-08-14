@@ -362,9 +362,27 @@ function splitTextBlocks(content: string): string[] {
   if (!normalized) throw new Error("文档内容不得为空");
   if (normalized.length > 20_000) throw new Error("单次文档写入不得超过 20000 字符");
   const chunks: string[] = [];
-  for (let offset = 0; offset < normalized.length; offset += 2_000) {
-    chunks.push(normalized.slice(offset, offset + 2_000));
+  let offset = 0;
+  while (offset < normalized.length) {
+    let end = Math.min(offset + 2_000, normalized.length);
+    if (
+      end < normalized.length &&
+      isHighSurrogate(normalized.charCodeAt(end - 1)) &&
+      isLowSurrogate(normalized.charCodeAt(end))
+    ) {
+      end -= 1;
+    }
+    chunks.push(normalized.slice(offset, end));
+    offset = end;
   }
   if (chunks.length > 50) throw new Error("单次文档写入不得超过 50 个文本块");
   return chunks;
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
 }

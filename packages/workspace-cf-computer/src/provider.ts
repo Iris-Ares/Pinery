@@ -67,6 +67,12 @@ export class CfComputerWorkspaceProvider implements WorkspaceProvider {
       }
       workspaceOwners.set(workspaceId, repo);
     }
+    if (workspaceOwners.size > 1) {
+      throw new Error(
+        "一个 Cloudflare Worker 部署当前只支持一个共享快照;" +
+          "其余仓库必须使用各自的普通会话工作区",
+      );
+    }
     if (options.client) {
       this.client = options.client;
     } else {
@@ -205,8 +211,9 @@ export function createWorkspaceProvider(cfg: PineryConfig): WorkspaceProvider {
 }
 
 /**
- * 生成按仓库绑定的快照表。旧版 workspace.options.shared_snapshot_id
- * 仅在单仓库配置中兼容;多仓库下拒绝启动,避免把 A 仓内容暴露给 B 仓会话。
+ * 生成按仓库绑定的快照表。Worker 当前只有一组 PINERY_SOURCE_* 快照元数据,
+ * 因此一个部署最多启用一个仓库快照;同一配置中的其他仓库仍使用普通会话工作区。
+ * 旧版 workspace.options.shared_snapshot_id 仅在单仓库配置中兼容。
  */
 export function sharedSnapshotsFromConfig(cfg: PineryConfig): Record<string, string> {
   const result: Record<string, string> = {};
@@ -234,6 +241,12 @@ export function sharedSnapshotsFromConfig(cfg: PineryConfig): Record<string, str
     }
     workspaceOwners.set(workspaceId, repo.name);
     result[repo.name] = workspaceId;
+  }
+  if (workspaceOwners.size > 1) {
+    throw new Error(
+      "一个 Cloudflare Worker 部署当前只支持一个 repos[].snapshot_id;" +
+        "其余仓库必须使用各自的普通会话工作区",
+    );
   }
   return result;
 }

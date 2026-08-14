@@ -63,8 +63,9 @@ L1+ 写任务(container 后端)。
 - 工作区 id 沿用 `s-<repo>-<hash(sessionKey)>`(会话)/`t-<repo>-<task>`(任务),
   与 Agent 实例事实上 1:1(chat→repo 由配置唯一确定)。
   若仓库配置 `repos[].snapshot_id`,L0 物理工作区改为该仓专属的共享不可变
-  快照;runner 会话仍分开持久化并绑定该 workspace id。多仓库不得共用
-  同一 snapshot workspace;L1 worktree 不复用共享只读快照。
+  快照;runner 会话仍分开持久化并绑定该 workspace id。一个 Worker 当前
+  最多配置一个仓库快照,其他仓库继续使用普通会话工作区;L1 worktree 不复用
+  共享只读快照。
 - **Agent 与 Workspace 分离为两个 DO 类**(不用官方单 DO 合体):既有 12-op
   线协议层原样复用;`/v1/ws` HTTP 入口继续服务「本地 adapter + CF 工作区」的
   混合形态;L1 任务工作区与 Agent 生命周期不同构;工作区(可整体重建)与

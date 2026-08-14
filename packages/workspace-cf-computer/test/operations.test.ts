@@ -263,6 +263,18 @@ describe("CfComputerWorkspaceProvider", () => {
     expect(worker.calls.filter((call) => call === "gitClone")).toHaveLength(1);
   });
 
+  it("rejects multiple direct snapshot bindings for one Worker endpoint", () => {
+    expect(
+      () =>
+        new CfComputerWorkspaceProvider({
+          endpoint: worker.url,
+          token: TOKEN,
+          retries: 0,
+          sharedSnapshots: { alpha: "s-alpha", beta: "s-beta" },
+        }),
+    ).toThrow(/\u53ea\u652f\u6301\u4e00\u4e2a/);
+  });
+
   it("rejects SSH repo urls with an actionable message (isomorphic-git has no SSH)", async () => {
     const p = new CfComputerWorkspaceProvider({ endpoint: worker.url, token: TOKEN, retries: 0 });
     await expect(
@@ -486,5 +498,22 @@ workspace:
       {} as NodeJS.ProcessEnv,
     );
     expect(() => createWorkspaceProvider(cfg)).toThrow(/\u540c\u65f6\u7ed1\u5b9a/);
+  });
+
+  it("rejects two repository snapshots because one Worker has one source metadata binding", () => {
+    const cfg = parseConfig(
+      `
+lark: { app_id: x, app_secret: y }
+repos:
+  - { name: alpha, url: "https://github.com/o/alpha.git", snapshot_id: s-alpha }
+  - { name: beta, url: "https://github.com/o/beta.git", snapshot_id: s-beta }
+workspace:
+  options:
+    endpoint: https://pinery.workers.dev
+    token: tok
+`,
+      {} as NodeJS.ProcessEnv,
+    );
+    expect(() => createWorkspaceProvider(cfg)).toThrow(/\u53ea\u652f\u6301\u4e00\u4e2a/);
   });
 });

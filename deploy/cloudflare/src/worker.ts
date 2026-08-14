@@ -162,23 +162,32 @@ class WorkspaceBase extends DurableObject<Env> {
 	get loaderBinding(): unknown {
 		return this.env.LOADER;
 	}
-	get sourcePrefix(): string | undefined {
-		return sourcePrefix(this.env.PINERY_SOURCE_PREFIX);
-	}
-	get sourceRepoUrl(): string | undefined {
-		return sourceRepoUrl(this.env.PINERY_SOURCE_REPO);
-	}
 	get sourceWorkspaceName(): string | undefined {
 		return this.env.PINERY_SOURCE_WORKSPACE?.trim() || undefined;
 	}
+	get isSourceWorkspace(): boolean {
+		const workspaceName = this.sourceWorkspaceName;
+		if (!workspaceName) return false;
+		const expectedId = this.env.WORKSPACE.idFromName(workspaceName).toString();
+		return this.ctx.id.toString() === expectedId;
+	}
+	get sourcePrefix(): string | undefined {
+		if (!this.isSourceWorkspace) return undefined;
+		return sourcePrefix(this.env.PINERY_SOURCE_PREFIX);
+	}
+	get sourceRepoUrl(): string | undefined {
+		if (!this.isSourceWorkspace) return undefined;
+		return sourceRepoUrl(this.env.PINERY_SOURCE_REPO);
+	}
 	get sourceMounts(): Record<string, EagerMount> | undefined {
 		const workspaceName = this.sourceWorkspaceName;
-		if (!workspaceName || this.env.PINERY_SOURCE_READY !== workspaceName)
+		if (
+			!workspaceName ||
+			!this.isSourceWorkspace ||
+			this.env.PINERY_SOURCE_READY !== workspaceName
+		)
 			return undefined;
-		const expectedId = this.env.WORKSPACE.idFromName(workspaceName).toString();
-		return this.ctx.id.toString() === expectedId
-			? { [WORKSPACE_ROOT]: snapshotLockMount }
-			: undefined;
+		return { [WORKSPACE_ROOT]: snapshotLockMount };
 	}
 	get workspaceDoId(): string {
 		return this.ctx.id.toString();

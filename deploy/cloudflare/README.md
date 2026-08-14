@@ -202,10 +202,12 @@ repos:
     snapshot_id: s-order-service-<short-sha>
 ```
 
-多仓库必须一仓一个 snapshot workspace,重复绑定会拒绝启动。旧的
-`workspace.options.shared_snapshot_id` 只兼容单仓库配置。快照按 commit
-不可变;更新代码时使用新 prefix + 新 workspace id 重复步骤,最后再切换
-该仓库的 `snapshot_id`。
+同一个 Worker 部署当前只有一组 `PINERY_SOURCE_*` 快照归属元数据,因此最多
+一个仓库可以配置 `snapshot_id`;其他仓库继续使用各自的普通会话工作区。
+配置多个快照或把同一 snapshot workspace 重复绑定给不同仓库都会拒绝启动。
+旧的 `workspace.options.shared_snapshot_id` 只兼容单仓库配置。快照按 commit
+不可变;更新代码时使用新 prefix + 新 workspace id 重复步骤,最后再切换该
+仓库的 `snapshot_id`。
 
 ### 本地端到端(无需真实飞书)
 

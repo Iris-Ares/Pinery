@@ -92,4 +92,25 @@ describe("LarkDocumentService", () => {
     expect(JSON.stringify(patch.body)).toContain("new value");
     expect(JSON.stringify(patch.body)).toContain('"bold":true');
   });
+
+  it("does not split an astral Unicode character across document blocks", async () => {
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = fakeClient((method, path, body) => {
+      calls.push({ method, path, body });
+      return { document_revision_id: 8 };
+    });
+    const content = `${"a".repeat(1_999)}\ud83d\ude80tail`;
+
+    await new LarkDocumentService(client).append("DocToken99", content, 7, "action-unicode");
+
+    const body = calls[0]!.body as {
+      children: Array<{ text: { elements: Array<{ text_run: { content: string } }> } }>;
+    };
+    const chunks = body.children.map((child) => child.text.elements[0]!.text_run.content);
+    expect(chunks).toHaveLength(2);
+    expect(chunks.every((chunk) => chunk.length <= 2_000)).toBe(true);
+    expect(chunks.join("")).toBe(content);
+    expect(chunks[0]!.endsWith("\ud83d")).toBe(false);
+    expect(chunks[1]!.startsWith("\ude80")).toBe(false);
+  });
 });

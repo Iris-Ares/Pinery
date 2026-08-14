@@ -192,7 +192,11 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 	async runtimeSmoke(): Promise<RuntimeSmokeResult> {
 		const startedAt = Date.now();
 		const { cfg, deps } = this.assemble();
-		const repo = cfg.repos[0];
+		const sourceWorkspace = this.env.PINERY_SOURCE_WORKSPACE?.trim();
+		const snapshots = sharedSnapshotsFromConfig(cfg);
+		const repo = cfg.repos.find(
+			(candidate) => snapshots[candidate.name] === sourceWorkspace,
+		);
 		const expectedCommit =
 			this.env.PINERY_SOURCE_PREFIX?.trim().split("/").at(-1) ?? "";
 		const base = { provider: cfg.model.provider, model: cfg.model.id };
@@ -208,7 +212,8 @@ export class PineryAgent extends Agent<PineryWorkerEnv, Record<string, never>> {
 				toolNames: [],
 				filesTouched: [],
 				durationMs: Date.now() - startedAt,
-				error: "运行时冒烟需要 repos[0] 与 PINERY_SOURCE_PREFIX",
+				error:
+					"运行时冒烟需要 PINERY_SOURCE_WORKSPACE 对应一个 repos[].snapshot_id,并配置 PINERY_SOURCE_PREFIX",
 			};
 		}
 
